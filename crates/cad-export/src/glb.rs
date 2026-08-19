@@ -26,7 +26,6 @@ const BYTE: u32 = 5120;
 const UNSIGNED_SHORT: u32 = 5123;
 const UNSIGNED_INT: u32 = 5125;
 const FLOAT: u32 = 5126;
-const SHORT: u32 = 5122;
 
 /// glTF buffer view targets.
 const ARRAY_BUFFER: u32 = 34962;

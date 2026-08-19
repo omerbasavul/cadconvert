@@ -175,7 +175,7 @@ pub fn tessellate(
     // boundary the tessellator invented would let a bad invention validate
     // itself.
     let mut boundary = cad_ir::math::Aabb::EMPTY;
-    for l in &loops {
+    for l in loops.iter() {
         for p in &l.xyz {
             boundary.add_point(*p);
         }
@@ -509,7 +509,7 @@ fn full_domain_loop(
     let wrap_u = |u: f64| if domain.u_period.is_some() && u >= u_hi { u_lo } else { u };
     let wrap_v = |v: f64| if domain.v_period.is_some() && v >= v_hi { v_lo } else { v };
 
-    let mut push = |u: f64, v: f64, uv: &mut Vec<Vec2>, xyz: &mut Vec<Vec3>| {
+    let push = |u: f64, v: f64, uv: &mut Vec<Vec2>, xyz: &mut Vec<Vec3>| {
         uv.push(Vec2::new(u, v));
         xyz.push(surface.point_at(Vec2::new(wrap_u(u), wrap_v(v))));
     };
