@@ -221,7 +221,12 @@ impl<'a> Lowering<'a> {
             Ok(s) => s,
             // Blend-family surfaces have no closed-form lowering; a face on
             // one is rebuilt as a Coons patch from its own boundary instead.
-            Err(reason) => return self.lower_face_as_coons(fe, reason),
+            Err(reason) => {
+                if std::env::var_os("XT_NO_COONS").is_some() {
+                    return Err(reason);
+                }
+                return self.lower_face_as_coons(fe, reason);
+            }
         };
 
         // The face sense char composes with the surface's own sense char.
@@ -405,8 +410,17 @@ impl<'a> Lowering<'a> {
             let Some(fe) = self.index.get(&fin).filter(|e| e.type_id == xt::FIN) else {
                 break;
             };
-            cycle.push(fe);
             let a = usize::from(fe.fields.len() < 10);
+            // A fin names the loop it belongs to. Following the forward
+            // pointer without checking it walks straight out of this loop and
+            // through the rest of the face — one plane in the Solid Edge
+            // assembly collected 163 half-edges that way, and its holes and
+            // outer profile fused into a single polygon whose triangulation
+            // agreed with nothing around it.
+            if ptr(fe, 1 - a) != le.index {
+                break;
+            }
+            cycle.push(fe);
             fin = ptr(fe, 2 - a);
         }
         if cycle.is_empty() {
@@ -523,7 +537,7 @@ impl<'a> Lowering<'a> {
         let curve_ptr = ptr(ee, 6);
         let curve_id = if curve_ptr != 0 {
             self.intern_curve(curve_ptr)?
-        } else if fin_pcurve != 0 {
+        } else if fin_pcurve != 0 && std::env::var_os("XT_NO_TOLERANT").is_none() {
             self.intern_tolerant_curve(edge_ptr, fin_pcurve)?
         } else {
             return Err(format!("edge {edge_ptr} has neither a curve nor a fin pcurve"));
@@ -546,6 +560,13 @@ impl<'a> Lowering<'a> {
             }
         };
 
+        if std::env::var_os("XT_CLOSED_TRACE").is_some() && closed_no_vertex {
+            eprintln!(
+                "[closed] edge {edge_ptr}: fins gave no vertices (start={fwd_start} end={fwd_end}) \
+                 -> full range on curve {:?}",
+                std::mem::discriminant(curve)
+            );
+        }
         let tol = f64_at(ee, 2);
         let tolerance = if tol.is_finite() && tol > 0.0 {
             tol
@@ -558,7 +579,21 @@ impl<'a> Lowering<'a> {
         let range = match curve {
             Curve::Trimmed { range, .. } => *range,
             _ if closed_no_vertex => curve.natural_range(),
-            _ => recover_edge_range(curve, p0, p1, true, tolerance),
+            // Which of the two arcs between the end points the edge is comes
+            // from the curve's own sense character, not from the loop: '-'
+            // means the curve runs against the edge, so the edge is the arc
+            // walked in decreasing parameter. Passing a constant `true` here
+            // took the long way round for half the arcs — on one body that
+            // quadrupled the total edge length and folded its faces over
+            // themselves.
+            _ => {
+                let along = self
+                    .index
+                    .get(&curve_ptr)
+                    .map(|ce| geom::geom_sense(ce) != '-')
+                    .unwrap_or(true);
+                recover_edge_range(curve, p0, p1, along, tolerance)
+            }
         };
 
         // Recovery can genuinely fail on an INTERSECTION edge: its chart is
@@ -597,23 +632,29 @@ impl<'a> Lowering<'a> {
         // convention, and later fins must flip their traversal.
         let built_reversed = rebuilt && !forward;
 
-        // A rebuilt edge owns synthetic end vertices — its ends are sample
-        // points within tolerance of the model's vertices, not the vertices
-        // themselves. A normal edge keeps the model's vertex identities.
-        let (sv, ev) = if rebuilt {
-            let sv = self.intern_vertex(0, p0);
-            let ev = if (p1 - p0).length_squared() < 1e-24 {
+        // Vertex identity is what makes the mesh watertight: the tessellator
+        // pins every edge chain's ends to its vertices, so two edges meeting
+        // at a corner produce bit-identical points only if they name the SAME
+        // vertex. A rebuilt edge's own end points are sample points a micron
+        // or so off the model's vertex, so the model's vertex handle wins
+        // wherever the fins supplied one — the sample merely fills the gap
+        // when they did not.
+        let (sv, ev) = {
+            let sv = if fwd_start != 0 {
+                let anchor = self.vertex_point(fwd_start).unwrap_or(p0);
+                self.intern_vertex(fwd_start, anchor)
+            } else {
+                self.intern_vertex(0, p0)
+            };
+            let ev = if closed_no_vertex || (fwd_end != 0 && fwd_end == fwd_start) {
+                sv
+            } else if fwd_end != 0 {
+                let anchor = self.vertex_point(fwd_end).unwrap_or(p1);
+                self.intern_vertex(fwd_end, anchor)
+            } else if (p1 - p0).length_squared() < 1e-24 {
                 sv
             } else {
                 self.intern_vertex(0, p1)
-            };
-            (sv, ev)
-        } else {
-            let sv = self.intern_vertex(fwd_start, p0);
-            let ev = if closed_no_vertex || fwd_end == fwd_start {
-                sv
-            } else {
-                self.intern_vertex(fwd_end, p1)
             };
             (sv, ev)
         };

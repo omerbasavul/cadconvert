@@ -513,8 +513,13 @@ fn diagnose(solid: &cad_ir::brep::Solid) -> Vec<String> {
         }
     }
     let dangling = uses.iter().filter(|&&u| u == 1).count();
-    if solid.body_type == cad_ir::brep::BodyType::Solid && dangling > 0 {
-        out.push(format!("{dangling} edges used by only one face"));
+    let unused = uses.iter().filter(|&&u| u == 0).count();
+    let over = uses.iter().filter(|&&u| u > 2).count();
+    if dangling > 0 || unused > 0 || over > 0 {
+        out.push(format!(
+            "edges: {} total, {dangling} used once, {unused} unused, {over} used 3+ times",
+            solid.edges.len()
+        ));
     }
     out
 }

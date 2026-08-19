@@ -707,6 +707,26 @@ mod tests {
         assert!((r.hi - (0.5 + TAU)).abs() < 1e-9);
     }
 
+    /// The direction argument is not cosmetic: on a periodic curve it selects
+    /// which of the two arcs the edge is, and getting it wrong takes the long
+    /// way round. Measured consequence on a real file: one body's total edge
+    /// length came out four times too long and its faces folded over
+    /// themselves.
+    #[test]
+    fn the_direction_flag_selects_the_short_or_the_long_arc() {
+        use crate::eval::curve::recover_edge_range;
+        let circle = Curve::Circle {
+            frame: Frame::IDENTITY,
+            radius: 10.0,
+        };
+        let (a, b) = (circle.point_at(0.2), circle.point_at(0.5));
+        let short = recover_edge_range(&circle, a, b, true, 1e-6);
+        let long = recover_edge_range(&circle, a, b, false, 1e-6);
+        assert!((short.span() - 0.3).abs() < 1e-9, "{short:?}");
+        assert!((long.span() - (TAU - 0.3)).abs() < 1e-9, "{long:?}");
+        assert!(short.span() + long.span() > TAU - 1e-9);
+    }
+
     #[test]
     fn a_composite_curve_walks_its_segments_including_reversed_ones() {
         let seg = |a: Vec3, b: Vec3, same_sense: bool| CompositeSegment {

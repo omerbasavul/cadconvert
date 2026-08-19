@@ -338,6 +338,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // 6g. FIN field census: how many fields, and where does the VERTEX sit?
+    {
+        let mut widths: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut vertex_at: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut null_vertex_at4 = 0usize;
+        for e in file.entities.iter().filter(|e| e.type_id == 17) {
+            *widths.entry(e.fields.len()).or_default() += 1;
+            for (i, f) in e.fields.iter().enumerate() {
+                if type_of(f.as_ptr()) == Some(18) {
+                    *vertex_at.entry(i).or_default() += 1;
+                }
+            }
+            let a = if e.fields.len() < 10 { 1 } else { 0 };
+            if e.fields.get(4 - a).map(|f| f.as_ptr()).unwrap_or(0) == 0 {
+                null_vertex_at4 += 1;
+            }
+        }
+        println!("\n-- FIN census --");
+        println!("  field widths: {widths:?}");
+        println!("  a VERTEX(18) is referenced from field index: {vertex_at:?}");
+        println!("  fins whose field 4 (offset-adjusted) is null: {null_vertex_at4}");
+    }
+
     // 7. Are the lowered spline surfaces where their boundaries are?
     // For each nurbs-surfaced face, invert its boundary chain points onto the
     // surface and measure the residual. A correct surface sits within model

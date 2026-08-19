@@ -166,6 +166,7 @@ pub fn tessellate_solid(
         .collect();
 
     let mut mesh = Mesh::default();
+    let mut face_ranges: Vec<(FaceId, usize, usize)> = Vec::new();
     let mut report = Report::default();
     let default_material = material.map(|m| m.0).unwrap_or(0);
 
@@ -253,6 +254,7 @@ pub fn tessellate_solid(
                     start,
                     count: mesh.indices.len() as u32 - start,
                 });
+                face_ranges.push((fid, start as usize, mesh.indices.len()));
                 report.faces_ok += 1;
             }
             Ok(patch) if patch.indices.is_empty() => report.failed.push(FaceFailure {
@@ -279,6 +281,95 @@ pub fn tessellate_solid(
                 face: fid,
                 reason: e,
             }),
+        }
+    }
+
+    // Per-face crack attribution: weld the finished mesh by exact bit pattern
+    // and blame each unshared edge on the face that contributed it. A face
+    // whose boundary does not meet its neighbours' shows up here by name and
+    // surface kind, which is the only way to tell a lowering bug from a
+    // tessellation one.
+    if std::env::var_os("CAD_TESS_CRACKS").is_some() {
+        let mut ids: rustc_hash::FxHashMap<[u32; 3], u32> = Default::default();
+        let mut weld = Vec::with_capacity(mesh.positions.len());
+        for p in &mesh.positions {
+            let key = [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+            let next = ids.len() as u32;
+            weld.push(*ids.entry(key).or_insert(next));
+        }
+        let mut uses: rustc_hash::FxHashMap<(u32, u32), u32> = Default::default();
+        for tri in mesh.indices.chunks_exact(3) {
+            for k in 0..3 {
+                let (a, b) = (weld[tri[k] as usize], weld[tri[(k + 1) % 3] as usize]);
+                if a != b {
+                    *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+                }
+            }
+        }
+        let focus = std::env::var("CAD_TESS_CRACKS").unwrap_or_default();
+        let mut per_face: Vec<(usize, FaceId, &str, usize, usize)> = Vec::new();
+        let mut by_kind: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+        for (fid, lo, hi) in &face_ranges {
+            let mut open = 0usize;
+            for tri in mesh.indices[*lo..*hi].chunks_exact(3) {
+                for k in 0..3 {
+                    let (a, b) = (weld[tri[k] as usize], weld[tri[(k + 1) % 3] as usize]);
+                    if a != b && uses.get(&(a.min(b), a.max(b))) == Some(&1) {
+                        open += 1;
+                    }
+                }
+            }
+            let kind = surface_kind(solid.surface(solid.face(*fid).surface));
+            let slot = by_kind.entry(kind).or_default();
+            slot.0 += open;
+            slot.1 += (hi - lo) / 3;
+            let boundary: usize = solid
+                .face(*fid)
+                .bounds
+                .iter()
+                .map(|b| b.halves.len())
+                .sum();
+            per_face.push((open, *fid, kind, (hi - lo) / 3, boundary));
+        }
+        if focus.len() > 3 && name.contains(&focus) {
+            per_face.sort_by_key(|r| std::cmp::Reverse(r.0));
+            for (open, fid, kind, tris, halves) in per_face.iter().take(6) {
+                eprintln!(
+                    "  [face] {fid:?} {kind:<10} tris {tris:>5} open {open:>5} halves {halves}"
+                );
+            }
+        }
+        // Do the shared edge chains actually reach the mesh? Every interior
+        // point of an edge's discretisation belongs to exactly two faces, so
+        // it must appear in the welded mesh exactly once, used by both.
+        let mut chain_present = 0usize;
+        let mut chain_missing = 0usize;
+        for chain in &edges {
+            for p in chain.points.iter().skip(1).take(chain.points.len().saturating_sub(2)) {
+                let key = [
+                    (p.x as f32).to_bits(),
+                    (p.y as f32).to_bits(),
+                    (p.z as f32).to_bits(),
+                ];
+                if ids.contains_key(&key) {
+                    chain_present += 1;
+                } else {
+                    chain_missing += 1;
+                }
+            }
+        }
+
+        let total: usize = by_kind.values().map(|(o, _)| o).sum();
+        if total > 0 {
+            let detail: Vec<String> = by_kind
+                .iter()
+                .filter(|(_, (o, _))| *o > 0)
+                .map(|(k, (o, t))| format!("{k} {o}/{t}"))
+                .collect();
+            eprintln!(
+                "[cracks] {name}: {total} open — {} | chain points in mesh {chain_present}, missing {chain_missing}",
+                detail.join(", ")
+            );
         }
     }
 
@@ -563,5 +654,22 @@ mod tests {
         .resolve(25.0);
         let loose = tessellate_solid("c", &solid, None, &[], &unlimited).0.triangle_count();
         assert!(loose < count(5.0), "angular limit had no effect");
+    }
+}
+
+/// A short name for a surface variant, for diagnostics.
+fn surface_kind(s: &cad_ir::Surface) -> &'static str {
+    use cad_ir::Surface::*;
+    match s {
+        Plane { .. } => "plane",
+        Cylinder { .. } => "cylinder",
+        Cone { .. } => "cone",
+        Sphere { .. } => "sphere",
+        Torus { .. } => "torus",
+        Nurbs(_) => "nurbs",
+        LinearExtrusion { .. } => "extrusion",
+        Revolution { .. } => "revolution",
+        Offset { .. } => "offset",
+        RectangularTrimmed { .. } => "trimmed",
     }
 }

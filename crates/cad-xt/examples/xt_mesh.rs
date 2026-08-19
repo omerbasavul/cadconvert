@@ -34,6 +34,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut scene, report) = cad_xt::scene_from_file(&path, &opts)?;
     let lower_ms = t0.elapsed().as_secs_f64() * 1e3;
 
+    // Narrow to one body by name, so per-face traces are unambiguous.
+    if let Ok(only) = std::env::var("XT_ONLY") {
+        let keep: Vec<bool> = scene
+            .geometry
+            .iter()
+            .map(|g| g.name.contains(&only))
+            .collect();
+        for (g, k) in scene.geometry.iter_mut().zip(&keep) {
+            if !k {
+                g.brep = None;
+            }
+        }
+    }
+
     let t1 = Instant::now();
     let tess = cad_tess::tessellate_scene(&mut scene, &quality);
     let tess_ms = t1.elapsed().as_secs_f64() * 1e3;
@@ -151,12 +165,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if !report.diagnostics.is_empty() {
+        println!("\n-- topology diagnostics (first 8 bodies) --");
+        for (name, c) in report.diagnostics.iter().take(8) {
+            println!("  {name:<22} {}", c.join("; "));
+        }
+    }
+
     println!("\n-- materials --");
     for (i, m) in scene.materials.iter().enumerate().take(20) {
         println!(
             "  [{i:>2}] {:<22} linear({:.3},{:.3},{:.3})  metal {:.1}  rough {:.2}",
             m.name, m.base_color[0], m.base_color[1], m.base_color[2], m.metallic, m.roughness
         );
+    }
+
+    if std::env::var_os("FACECOUNT").is_some() {
+        for g in &scene.geometry {
+            if let Some(sd) = &g.brep {
+                let loops: usize = sd.faces.iter().map(|f| f.bounds.len()).sum();
+                let halves: usize = sd
+                    .faces
+                    .iter()
+                    .flat_map(|f| f.bounds.iter())
+                    .map(|b| b.halves.len())
+                    .sum();
+                let closed = sd.edges.iter().filter(|e| e.start == e.end).count();
+                let arc_len: f64 = sd
+                    .edges
+                    .iter()
+                    .map(|e| {
+                        let c = sd.curve(e.curve);
+                        let n = 8;
+                        (0..n)
+                            .map(|k| {
+                                let a = c.point_at(e.range.at(k as f64 / n as f64));
+                                let b = c.point_at(e.range.at((k + 1) as f64 / n as f64));
+                                (b - a).length()
+                            })
+                            .sum::<f64>()
+                    })
+                    .sum();
+                println!(
+                    "[fc] {:<24} faces {:>5} loops {:>5} halves {:>6} edges {:>6} closed {:>5} arclen {:>12.1}",
+                    g.name, sd.faces.len(), loops, halves, sd.edges.len(), closed, arc_len
+                );
+            }
+        }
     }
 
     let b = scene.bounds();

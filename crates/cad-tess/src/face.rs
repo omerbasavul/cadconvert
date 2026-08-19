@@ -940,6 +940,17 @@ fn triangulate(
     if boundary_handles.len() < 3 {
         return Err("outer boundary collapsed to fewer than three distinct points".into());
     }
+    if std::env::var_os("CAD_TESS_MERGE").is_some() {
+        let distinct: std::collections::BTreeSet<usize> = boundary_handles.iter().copied().collect();
+        if distinct.len() != outer.uv.len() {
+            eprintln!(
+                "[merge] boundary {} points -> {} distinct handles ({} merged)",
+                outer.uv.len(),
+                distinct.len(),
+                outer.uv.len() - distinct.len()
+            );
+        }
+    }
     constrain(&mut cdt, &boundary_handles);
 
     for hole in &holes {
@@ -1069,23 +1080,56 @@ fn interior_samples(
         return Vec::new();
     }
 
+    // An interior point that lands on a boundary constraint splits it — and
+    // the neighbouring face, whose interior samples are its own, does not
+    // split its copy of that same edge. The two meshes then disagree along a
+    // shared boundary and the model opens up. Keeping samples clear of the
+    // boundary by a fraction of the local spacing is what makes independent
+    // per-face triangulation safe.
+    let du = (u_hi - u_lo) / nu as f64;
+    let dv = (v_hi - v_lo) / nv as f64;
+    let clearance = 0.25 * du.hypot(dv);
+
     let mut out = Vec::with_capacity((nu * nv) / 2);
     for i in 1..nu {
         for j in 1..nv {
-            let uv = Vec2::new(
-                u_lo + (u_hi - u_lo) * i as f64 / nu as f64,
-                v_lo + (v_hi - v_lo) * j as f64 / nv as f64,
-            );
+            let uv = Vec2::new(u_lo + du * i as f64, v_lo + dv * j as f64);
             if !contains(&outer.uv, uv) {
                 continue;
             }
             if holes.iter().any(|h| contains(&h.uv, uv)) {
                 continue;
             }
+            if near_boundary(&outer.uv, uv, clearance)
+                || holes.iter().any(|h| near_boundary(&h.uv, uv, clearance))
+            {
+                continue;
+            }
             out.push(uv);
         }
     }
     out
+}
+
+/// Distance from `p` to the polygon's nearest edge, tested against `limit`.
+fn near_boundary(poly: &[Vec2], p: Vec2, limit: f64) -> bool {
+    let limit2 = limit * limit;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let (ex, ey) = (b.u - a.u, b.v - a.v);
+        let len2 = ex * ex + ey * ey;
+        let t = if len2 > 0.0 {
+            (((p.u - a.u) * ex + (p.v - a.v) * ey) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (dx, dy) = (p.u - (a.u + ex * t), p.v - (a.v + ey * t));
+        if dx * dx + dy * dy < limit2 {
+            return true;
+        }
+    }
+    false
 }
 
 enum Axis {

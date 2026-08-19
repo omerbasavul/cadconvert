@@ -220,6 +220,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    if std::env::var_os("FACECOUNT").is_some() {
+        for g in &scene.geometry {
+            if let Some(sd) = &g.brep {
+                let loops: usize = sd.faces.iter().map(|f| f.bounds.len()).sum();
+                let halves: usize = sd
+                    .faces
+                    .iter()
+                    .flat_map(|f| f.bounds.iter())
+                    .map(|b| b.halves.len())
+                    .sum();
+                let closed = sd.edges.iter().filter(|e| e.start == e.end).count();
+                let arc_len: f64 = sd
+                    .edges
+                    .iter()
+                    .map(|e| {
+                        let c = sd.curve(e.curve);
+                        let n = 8;
+                        (0..n)
+                            .map(|k| {
+                                let a = c.point_at(e.range.at(k as f64 / n as f64));
+                                let b = c.point_at(e.range.at((k + 1) as f64 / n as f64));
+                                (b - a).length()
+                            })
+                            .sum::<f64>()
+                    })
+                    .sum();
+                println!(
+                    "[fc] {:<24} faces {:>5} loops {:>5} halves {:>6} edges {:>6} closed {:>5} arclen {:>12.1}",
+                    g.name, sd.faces.len(), loops, halves, sd.edges.len(), closed, arc_len
+                );
+            }
+        }
+    }
+
     let b = scene.bounds();
     println!("\n-- extent (mm) --");
     println!(
