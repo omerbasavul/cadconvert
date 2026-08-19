@@ -14,7 +14,8 @@ pub mod geom;
 pub mod topo;
 
 use cad_ir::material_resolve::{ColourEvidence, MaterialResolver};
-use cad_ir::scene::{Geometry, MaterialId, Meta, Node, Scene, Unit};
+use cad_ir::math::Transform;
+use cad_ir::scene::{Geometry, GeometryId, MaterialId, Meta, Node, NodeId, Scene, Unit};
 use rustc_hash::FxHashMap;
 use xt_parser::appearance;
 
@@ -99,6 +100,7 @@ pub fn to_scene(text: &str, options: &LowerOptions) -> Result<(Scene, Report), X
     // XT coordinates are metres; the shared scene convention is millimetres.
     const M_TO_MM: f64 = 1e3;
 
+    let mut geometry_of_body: FxHashMap<usize, (GeometryId, String)> = FxHashMap::default();
     for lowered in topo::lower_bodies(&file.entities, topo::DEFAULT_TOLERANCE) {
         let topo::LoweredBody {
             mut solid,
@@ -158,15 +160,168 @@ pub fn to_scene(text: &str, options: &LowerOptions) -> Result<(Scene, Report), X
             material,
             face_materials,
         });
-        let node = scene.add_node(Node {
-            name,
-            geometry: Some(gid),
-            ..Default::default()
-        });
-        scene.roots.push(node);
+        geometry_of_body.insert(body_handle, (gid, name));
     }
 
+    place_instances(&file.entities, &geometry_of_body, &mut scene, &mut report);
+
     Ok((scene, report))
+}
+
+/// Build the assembly tree from INSTANCE (11) and TRANSFORM (100) entities.
+///
+/// Each instance places a part — a body or a whole assembly — under an owning
+/// assembly, with an optional rigid transform. Bodies never referenced by any
+/// instance stand alone at the root, which is also the whole story for
+/// single-body exports.
+fn place_instances(
+    entities: &[xt_parser::entity::RawEntity],
+    geometry_of_body: &FxHashMap<usize, (GeometryId, String)>,
+    scene: &mut Scene,
+    report: &mut Report,
+) {
+    let index: FxHashMap<usize, &xt_parser::entity::RawEntity> =
+        entities.iter().map(|e| (e.index, e)).collect();
+    let ptr = |e: &xt_parser::entity::RawEntity, i: usize| {
+        e.fields.get(i).map(|f| f.as_ptr()).unwrap_or(0)
+    };
+
+    // INSTANCE: [3]=part (BODY or ASSEMBLY), [4]=transform, [5]=owner assembly.
+    struct Inst {
+        part: usize,
+        owner: usize,
+        transform: Transform,
+    }
+    let mut instances: Vec<Inst> = Vec::new();
+    let mut instanced_bodies: rustc_hash::FxHashSet<usize> = Default::default();
+    for e in entities.iter().filter(|e| e.type_id == 11) {
+        let part = ptr(e, 3);
+        let owner = ptr(e, 5);
+        let transform = index
+            .get(&ptr(e, 4))
+            .filter(|t| t.type_id == 100)
+            .map(|t| transform_of(t))
+            .unwrap_or(Transform::IDENTITY);
+        if index.get(&part).is_some_and(|p| p.type_id == 12) {
+            instanced_bodies.insert(part);
+        }
+        instances.push(Inst {
+            part,
+            owner,
+            transform,
+        });
+    }
+
+    if instances.is_empty() {
+        for (gid, name) in geometry_of_body.values() {
+            let node = scene.add_node(Node {
+                name: name.clone(),
+                geometry: Some(*gid),
+                ..Default::default()
+            });
+            scene.roots.push(node);
+        }
+        return;
+    }
+
+    // One node per assembly, then one node per instance under its owner.
+    let mut assembly_node: FxHashMap<usize, NodeId> = FxHashMap::default();
+    for e in entities.iter().filter(|e| e.type_id == 10) {
+        let id = scene.add_node(Node {
+            name: format!("assembly-{}", e.index),
+            ..Default::default()
+        });
+        assembly_node.insert(e.index, id);
+    }
+
+    let mut placed_assemblies: rustc_hash::FxHashSet<usize> = Default::default();
+    for inst in &instances {
+        let node = match index.get(&inst.part).map(|p| p.type_id) {
+            Some(12) => {
+                let Some((gid, name)) = geometry_of_body.get(&inst.part) else {
+                    continue; // a body that lowered to nothing
+                };
+                scene.add_node(Node {
+                    name: name.clone(),
+                    transform: inst.transform,
+                    geometry: Some(*gid),
+                    ..Default::default()
+                })
+            }
+            Some(10) => {
+                let Some(&sub) = assembly_node.get(&inst.part) else {
+                    continue;
+                };
+                // A sub-assembly node has a single parent in this model; a
+                // second placement would need node duplication, which the
+                // corpus does not exercise — count it rather than mis-place.
+                if !placed_assemblies.insert(inst.part) {
+                    report.diagnostics.push((
+                        format!("assembly-{}", inst.part),
+                        vec!["placed more than once; later placements dropped".into()],
+                    ));
+                    continue;
+                }
+                scene.add_node(Node {
+                    name: format!("assembly-{}", inst.part),
+                    transform: inst.transform,
+                    children: vec![sub],
+                    ..Default::default()
+                })
+            }
+            _ => continue,
+        };
+        match assembly_node.get(&inst.owner) {
+            Some(&owner) => scene.nodes[owner.index()].children.push(node),
+            None => scene.roots.push(node),
+        }
+    }
+
+    // Assemblies never placed anywhere are roots.
+    for (handle, &node) in &assembly_node {
+        if !placed_assemblies.contains(handle) {
+            scene.roots.push(node);
+        }
+    }
+    // Bodies no instance references stand alone.
+    for (handle, (gid, name)) in geometry_of_body {
+        if !instanced_bodies.contains(handle) {
+            let node = scene.add_node(Node {
+                name: name.clone(),
+                geometry: Some(*gid),
+                ..Default::default()
+            });
+            scene.roots.push(node);
+        }
+    }
+}
+
+/// TRANSFORM (100): `[4]` rotation matrix (nine floats), `[5]` translation,
+/// `[6]` scale. Translation is in the file's metres and the scene is
+/// millimetres, so it scales by a thousand; the rotation does not.
+fn transform_of(t: &xt_parser::entity::RawEntity) -> Transform {
+    let m3 = t.fields.get(4).and_then(|f| f.as_mat3()).unwrap_or([
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+    ]);
+    let tr = t
+        .fields
+        .get(5)
+        .map(|f| f.as_vec3())
+        .unwrap_or([0.0; 3]);
+    let scale = t
+        .fields
+        .get(6)
+        .map(|f| f.as_f64())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+    let mut out = Transform::IDENTITY;
+    for r in 0..3 {
+        for c in 0..3 {
+            out.m[r][c] = m3[r * 3 + c] * scale;
+        }
+        out.m[r][3] = tr[r] * 1e3;
+    }
+    out
 }
 
 /// Per-face colour and reflectivity from the attribute graph.

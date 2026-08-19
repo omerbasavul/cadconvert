@@ -156,9 +156,11 @@ struct Lowering<'a> {
     surfaces: FxHashMap<usize, SurfaceId>,
     curves: FxHashMap<usize, CurveId>,
     vertices: FxHashMap<usize, VertexId>,
-    /// Keyed by (edge handle, forward-orientation start vertex handle) so a
-    /// closed edge reused by two loops still maps to one [`Edge`].
-    edges: FxHashMap<usize, EdgeId>,
+    /// Edge handle → (id, built_reversed). `built_reversed` is set when the
+    /// stored curve runs along the fin that *created* the edge rather than the
+    /// `+` convention — the tolerant fallback samples the creating fin's own
+    /// parameter curve — and tells later fins to flip their traversal.
+    edges: FxHashMap<usize, (EdgeId, bool)>,
     face_sources: Vec<usize>,
     skipped: Vec<Skip>,
 }
@@ -298,18 +300,23 @@ impl<'a> Lowering<'a> {
             if edge_ptr == 0 {
                 continue;
             }
-            let start = starts[i];
-            let end = starts[(i + 1) % starts.len()];
+            // Measured, not assumed: a fin's vertex is the one its edge
+            // *arrives* at. On edge 466273 of the Solid Edge file the line
+            // runs (0,0,1), its two true ends differ only in z, and pairing
+            // each fin with the NEXT fin's vertex produced "ends" 0.2 mm apart
+            // perpendicular to the line — one edge ahead of the truth.
+            let start = starts[(i + starts.len() - 1) % starts.len()];
+            let end = starts[i];
             let forward = sense != '-';
-            match self.intern_edge(edge_ptr, start, end, forward) {
-                Ok(edge) => {
+            match self.intern_edge(edge_ptr, start, end, forward, pcurve_ptr) {
+                Ok((edge, built_reversed)) => {
                     let pcurve = self
                         .index
                         .get(&pcurve_ptr)
                         .and_then(|pe| geom::pcurve_of(pe, self.index));
                     halves.push(HalfEdge {
                         edge,
-                        forward,
+                        forward: forward ^ built_reversed,
                         pcurve,
                     });
                 }
@@ -371,16 +378,25 @@ impl<'a> Lowering<'a> {
         start: usize,
         end: usize,
         forward: bool,
-    ) -> Result<EdgeId, String> {
+        fin_pcurve: usize,
+    ) -> Result<(EdgeId, bool), String> {
         if let Some(&e) = self.edges.get(&edge_ptr) {
             return Ok(e);
         }
         let Some(ee) = self.index.get(&edge_ptr).filter(|e| e.type_id == xt::EDGE) else {
             return Err(format!("fin's edge {edge_ptr} is not an EDGE"));
         };
-        // EDGE: [2]=tolerance, [6]=curve.
+        // EDGE: [2]=tolerance, [6]=curve. A tolerant edge has no 3D curve at
+        // all — its geometry lives in each fin's SP_CURVE — so the fin's
+        // parameter-space curve, sampled through its face's surface, stands in.
         let curve_ptr = ptr(ee, 6);
-        let curve_id = self.intern_curve(curve_ptr)?;
+        let curve_id = if curve_ptr != 0 {
+            self.intern_curve(curve_ptr)?
+        } else if fin_pcurve != 0 {
+            self.intern_tolerant_curve(edge_ptr, fin_pcurve)?
+        } else {
+            return Err(format!("edge {edge_ptr} has neither a curve nor a fin pcurve"));
+        };
 
         let (fwd_start, fwd_end) = if forward { (start, end) } else { (end, start) };
 
@@ -410,25 +426,65 @@ impl<'a> Lowering<'a> {
         // from the end points.
         let range = match curve {
             Curve::Trimmed { range, .. } => *range,
-            _ if closed_no_vertex => {
-                let r = curve.natural_range();
-                if curve.period().is_some() {
-                    r
-                } else {
-                    r
-                }
-            }
+            _ if closed_no_vertex => curve.natural_range(),
             _ => recover_edge_range(curve, p0, p1, true, tolerance),
         };
-        if !range.span().is_finite() || range.span() <= 0.0 {
-            return Err(format!("edge {edge_ptr}: unrecoverable range {range:?}"));
-        }
 
-        let sv = self.intern_vertex(fwd_start, p0);
-        let ev = if closed_no_vertex || fwd_end == fwd_start {
-            sv
+        // Recovery can genuinely fail on an INTERSECTION edge: its chart is
+        // the modeller's sparse evaluation of the curve and may not reach the
+        // edge's ends at all. The fin's own parameter curve covers exactly
+        // this edge, so sample it through the face's surface and use that —
+        // range, geometry and end points all come from the samples.
+        let (curve_id, range, p0, p1, rebuilt) =
+            if range.span().is_finite() && range.span() > 0.0 {
+                (curve_id, range, p0, p1, false)
+            } else if fin_pcurve != 0 {
+                let cid = self.intern_tolerant_curve(edge_ptr, fin_pcurve)?;
+                let c = &self.solid.curves[cid.index()];
+                let natural = c.natural_range();
+                let (a, b) = (c.point_at(natural.lo), c.point_at(natural.hi));
+                (cid, natural, a, b, true)
+            } else {
+                let kind = match curve {
+                    Curve::Line { .. } => "line",
+                    Curve::Circle { .. } => "circle",
+                    Curve::Ellipse { .. } => "ellipse",
+                    Curve::Polyline { .. } => "chart-polyline",
+                    Curve::Nurbs(_) => "nurbs",
+                    Curve::Trimmed { .. } => "trimmed",
+                    _ => "other",
+                };
+                return Err(format!(
+                    "edge {edge_ptr}: unrecoverable {kind} range (span {:.3e}, ends {:.4} apart)",
+                    range.span(),
+                    (p1 - p0).length()
+                ));
+            };
+
+        // The rebuilt samples run in the creating fin's direction; when that
+        // fin was reversed the stored curve runs against the edge's `+`
+        // convention, and later fins must flip their traversal.
+        let built_reversed = rebuilt && !forward;
+
+        // A rebuilt edge owns synthetic end vertices — its ends are sample
+        // points within tolerance of the model's vertices, not the vertices
+        // themselves. A normal edge keeps the model's vertex identities.
+        let (sv, ev) = if rebuilt {
+            let sv = self.intern_vertex(0, p0);
+            let ev = if (p1 - p0).length_squared() < 1e-24 {
+                sv
+            } else {
+                self.intern_vertex(0, p1)
+            };
+            (sv, ev)
         } else {
-            self.intern_vertex(fwd_end, p1)
+            let sv = self.intern_vertex(fwd_start, p0);
+            let ev = if closed_no_vertex || fwd_end == fwd_start {
+                sv
+            } else {
+                self.intern_vertex(fwd_end, p1)
+            };
+            (sv, ev)
         };
 
         let id = EdgeId(self.solid.edges.len() as u32);
@@ -440,7 +496,34 @@ impl<'a> Lowering<'a> {
             range,
             tolerance,
         });
-        self.edges.insert(edge_ptr, id);
+        self.edges.insert(edge_ptr, (id, built_reversed));
+        Ok((id, built_reversed))
+    }
+
+    /// The stand-in curve for a tolerant edge: its fin's SP_CURVE sampled to
+    /// a 3D polyline. Cached under a key that cannot collide with real curve
+    /// handles because an entity handle is never zero.
+    fn intern_tolerant_curve(
+        &mut self,
+        edge_ptr: usize,
+        fin_pcurve: usize,
+    ) -> Result<CurveId, String> {
+        let Some(pe) = self.index.get(&fin_pcurve) else {
+            return Err(format!("edge {edge_ptr}: fin pcurve {fin_pcurve} does not exist"));
+        };
+        let curve = geom::sp_curve_polyline(pe, self.index)?;
+        if std::env::var_os("XT_CURVE_TRACE").is_some()
+            && let Curve::Polyline { points } = &curve
+            && points.iter().any(|p| p.length() > 100.0)
+        {
+            eprintln!(
+                "[far-tolerant] edge {edge_ptr} pcurve {fin_pcurve} type {} first={:?}",
+                pe.type_id,
+                points.first()
+            );
+        }
+        let id = CurveId(self.solid.curves.len() as u32);
+        self.solid.curves.push(curve);
         Ok(id)
     }
 
@@ -474,6 +557,16 @@ impl<'a> Lowering<'a> {
             return Err(format!("curve {handle} does not exist"));
         };
         let mut curve = geom::curve(ce, self.index)?;
+        if std::env::var_os("XT_CURVE_TRACE").is_some()
+            && let Curve::Polyline { points } = &curve
+            && points.iter().any(|p| p.length() > 100.0)
+        {
+            eprintln!(
+                "[far-curve] handle {handle} type {} first={:?}",
+                ce.type_id,
+                points.first()
+            );
+        }
         // An SP_CURVE references its surface by XT handle; map it to the
         // interned SurfaceId so the tessellator can evaluate through it.
         if let Curve::OnSurface { surface, .. } = &mut curve {

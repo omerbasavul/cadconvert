@@ -563,15 +563,40 @@ fn wrapped_region(
             // from geometry alone fabricated a fan of long thin triangles
             // reaching to an apex the part does not have.
             let ring = rings.pop().expect("checked length");
-            let Some(apex) = nearest_apex(apexes, &ring) else {
+            let apex = nearest_apex(apexes, &ring).or_else(|| {
+                // No declared apex — Parasolid has no vertex-loop concept, so
+                // its cone-to-a-point faces arrive as a single ring. Closing
+                // onto the surface's own degenerate point is legitimate when
+                // that point is FINITE and within reach of the ring: the
+                // domain edge where a cone's radius hits zero is its apex.
+                // The reach bound is what stops a shallow cone running to an
+                // apex far outside the part (the spike bug of the STEP pilot).
+                let v_mid = mean_v(&ring.uv);
+                let toward_high = (domain.v.hi - v_mid).abs() < (v_mid - domain.v.lo).abs();
+                let v_edge = if toward_high { domain.v.hi } else { domain.v.lo };
+                if !v_edge.is_finite() || v_edge.abs() > 1e11 {
+                    return None;
+                }
+                let candidate = surface.point_at(Vec2::new(ring.uv[0].u, v_edge));
+                let centre = ring.xyz.iter().fold(Vec3::ZERO, |a, p| a + *p)
+                    * (1.0 / ring.xyz.len().max(1) as f64);
+                let girth = ring
+                    .xyz
+                    .iter()
+                    .map(|p| (*p - centre).length())
+                    .fold(0.0f64, f64::max);
+                ((candidate - centre).length() <= girth * 8.0 + options.sag * 16.0)
+                    .then_some(candidate)
+            });
+            let Some(apex) = apex else {
                 return Err(format!(
-                    "one wrapping loop and no vertex loop to close it onto \
-                     ({} degenerate bounds declared)",
+                    "one wrapping loop, no declared apex, and no finite domain \
+                     edge within reach ({} degenerate bounds declared)",
                     apexes.len()
                 ));
             };
             let Some(apex_uv) = surface.invert(apex, ring.uv.first().copied()) else {
-                return Err("the declared apex does not invert onto the surface".into());
+                return Err("the apex does not invert onto the surface".into());
             };
             let edge_ring = pole_ring(&ring, apex, apex_uv.v);
             if apex_uv.v > mean_v(&ring.uv) {

@@ -368,18 +368,34 @@ impl Solid {
     pub fn geometric_bounds(&self) -> Aabb {
         let mut b = self.vertex_bounds();
 
-        // Circles always count: every circle of a B-Rep is an intersection
-        // ring sitting on the body, and its extent is bounded by its own
-        // radius. They are also the *only* extent witness a turned part has —
-        // its edges are all closed circles, whose seam vertices cluster at one
-        // angle and make the vertex box a thin sliver of the truth.
-        for c in &self.curves {
-            if let Curve::Circle { frame, radius } = c {
-                let reach = radius.abs();
-                if reach.is_finite() && frame.origin.is_finite() {
-                    let r = Vec3::new(reach, reach, reach);
-                    b.add_point(frame.origin - r);
-                    b.add_point(frame.origin + r);
+        // Circles count — they are the only extent witness a turned part has,
+        // its edges being closed circles whose seam vertices cluster at one
+        // angle — but not unconditionally: real files carry construction
+        // circles with kilometre radii (blend spines, flattened intersections),
+        // and one of those would swallow the reference the way far-flung spline
+        // control points would. The filter is consensus by median radius: the
+        // body's own circles agree with each other about its scale, and a
+        // circle an order of magnitude beyond that agreement is not the body.
+        let mut radii: Vec<f64> = self
+            .curves
+            .iter()
+            .filter_map(|c| match c {
+                Curve::Circle { radius, .. } if radius.is_finite() => Some(radius.abs()),
+                _ => None,
+            })
+            .collect();
+        if !radii.is_empty() {
+            radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = radii[radii.len() / 2];
+            let limit = (median * 8.0).max(1e-9);
+            for c in &self.curves {
+                if let Curve::Circle { frame, radius } = c {
+                    let reach = radius.abs();
+                    if reach.is_finite() && reach <= limit && frame.origin.is_finite() {
+                        let r = Vec3::new(reach, reach, reach);
+                        b.add_point(frame.origin - r);
+                        b.add_point(frame.origin + r);
+                    }
                 }
             }
         }
@@ -518,6 +534,29 @@ mod tests {
         assert!(!b.is_empty());
         assert!(b.size().x >= 20.0, "got {:?}", b.size());
         assert!(b.size().z >= 25.0, "got {:?}", b.size());
+    }
+
+    #[test]
+    fn geometric_bounds_rejects_a_construction_circle_far_off_scale() {
+        use crate::math::Frame;
+        let mut curves: Vec<Curve> = (0..9)
+            .map(|i| Curve::Circle {
+                frame: Frame::new(Vec3::new(0.0, 0.0, i as f64 * 10.0), Vec3::Z, Vec3::X),
+                radius: 40.0 + i as f64,
+            })
+            .collect();
+        // A blend-spine circle a kilometre across, as Solid Edge writes them.
+        curves.push(Curve::Circle {
+            frame: Frame::IDENTITY,
+            radius: 1.0e6,
+        });
+        let s = Solid {
+            curves,
+            ..Default::default()
+        };
+        let d = s.geometric_bounds().diagonal();
+        assert!(d < 500.0, "the outlier got in: diagonal {d}");
+        assert!(d > 90.0, "the real circles got lost: diagonal {d}");
     }
 
     #[test]

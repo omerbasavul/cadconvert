@@ -52,6 +52,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             edges += s.edges.len();
         }
     }
+    if std::env::var_os("XT_BODY_BOUNDS").is_some() {
+        println!("\n-- per-body vertex bounds (mm) --");
+        for g in &scene.geometry {
+            if let Some(sd) = &g.brep {
+                let b = sd.vertex_bounds();
+                if !b.is_empty() {
+                    println!(
+                        "  {:<22} centre ({:>10.1},{:>10.1},{:>10.1})  diag {:>9.1}",
+                        g.name,
+                        b.centre().x,
+                        b.centre().y,
+                        b.centre().z,
+                        b.diagonal()
+                    );
+                }
+            }
+        }
+    }
+
+    if std::env::var_os("XT_STRAY_SCAN").is_some() {
+        for g in &scene.geometry {
+            let Some(sd) = &g.brep else { continue };
+            for (vi, v) in sd.vertices.iter().enumerate() {
+                if v.length() > 1.0e5 {
+                    // which edges reference it, and what curve they ride
+                    for (ei, e) in sd.edges.iter().enumerate() {
+                        if e.start.index() == vi || e.end.index() == vi {
+                            let kind = match sd.curve(e.curve) {
+                                cad_ir::Curve::Line { .. } => "line",
+                                cad_ir::Curve::Circle { .. } => "circle",
+                                cad_ir::Curve::Polyline { .. } => "polyline",
+                                cad_ir::Curve::Nurbs(_) => "nurbs",
+                                cad_ir::Curve::Trimmed { .. } => "trimmed",
+                                _ => "other",
+                            };
+                            println!(
+                                "[stray-v] {} vertex {vi} at ({:.0},{:.0},{:.0}) edge {ei} {kind} range [{:.3},{:.3}]",
+                                g.name, v.x, v.y, v.z, e.range.lo, e.range.hi
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     println!("\n-- scene --");
     println!("  bodies      {}", scene.geometry.len());
     println!("  faces       {faces}   edges {edges}");
@@ -73,6 +119,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n-- lowering skips ({}) --", report.skipped.len());
         for (r, n) in by_reason.iter().take(10) {
             println!("  {n:>6}  {r}");
+        }
+        if std::env::var_os("XT_SKIP_SAMPLES").is_some() {
+            let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
+            for sk in &report.skipped {
+                let key: String = sk.reason.split(|c: char| c.is_ascii_digit()).collect();
+                let n = seen.entry(key).or_default();
+                if *n < 2 {
+                    println!("    e.g. #{}: {}", sk.entity, sk.reason);
+                }
+                *n += 1;
+            }
         }
     }
     if !tess.failed.is_empty() {

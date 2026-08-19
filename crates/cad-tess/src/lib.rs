@@ -180,7 +180,21 @@ pub fn tessellate_solid(
 
     for (_shell, fid, result) in faces {
         match result {
-            Ok(patch) if !patch.indices.is_empty() && !escapes_body(&patch, &reference) => {
+            Ok(patch)
+                if !patch.indices.is_empty() && !escapes_body(&patch, &reference) =>
+            {
+                if std::env::var_os("CAD_TESS_TRACE_HUGE").is_some() {
+                    let far = farthest(&patch, &reference);
+                    if far > 1.0e4 || far > reference.diagonal().max(1.0) * 0.9 {
+                        let f = solid.face(fid);
+                        eprintln!(
+                            "[huge] {name} face {} reaches {far:.0} (ref diag {:.0}) surface={:?}",
+                            fid.0,
+                            reference.diagonal(),
+                            std::mem::discriminant(solid.surface(f.surface))
+                        );
+                    }
+                }
                 if trace_strays {
                     let centre = reference.centre();
                     let limit = reference.diagonal().max(1.0) * 2.0;

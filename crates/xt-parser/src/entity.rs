@@ -56,6 +56,8 @@ impl FieldVal {
         match self {
             FieldVal::Float(f) => *f,
             FieldVal::Int(i) => *i as f64,
+            FieldVal::Short(s) => *s as f64,
+            FieldVal::Byte(b) => *b as f64,
             _ => 0.0,
         }
     }
@@ -76,6 +78,12 @@ impl FieldVal {
         match self {
             FieldVal::Vec3(v) => *v,
             _ => [0.0; 3],
+        }
+    }
+    pub fn as_mat3(&self) -> Option<[f64; 9]> {
+        match self {
+            FieldVal::Mat3(m) => Some(*m),
+            _ => None,
         }
     }
     pub fn as_byte(&self) -> u8 {
@@ -541,7 +549,18 @@ fn read_field_value(input: &mut &str, fd: &FieldDesc) -> Result<FieldVal> {
         n => n as usize,                   // fixed array
     };
 
-    // Read first element, discard the rest for multi-element fields.
+    // A 9-float fixed array is a rotation matrix (TRANSFORM), and collapsing
+    // it to its first element throws away the rotation — every instanced body
+    // would land unrotated at its translation. Keep all nine.
+    if fd.type_char == 'f' && count == 9 {
+        let mut m = [0.0f64; 9];
+        for slot in &mut m {
+            *slot = read_f64(input)?;
+        }
+        return Ok(FieldVal::Mat3(m));
+    }
+
+    // Read first element, discard the rest for other multi-element fields.
     let first = read_single_field(input, fd.type_char)?;
     for _ in 1..count {
         let _ = read_single_field(input, fd.type_char)?;
