@@ -1812,7 +1812,6 @@ pub fn parse_tline(body: &str) -> crate::error::Result<TLine> {
     // Advance input past SCH_ and read the schema key
     input = &input[sch_pos..];
     // Read SCH_<digits>_<digits> optionally _<digits>
-    let key_start = input;
     // Skip "SCH_"
     input = &input[4..];
     // Read first group of digits
@@ -1849,8 +1848,10 @@ pub fn parse_tline(body: &str) -> crate::error::Result<TLine> {
         }
     })?;
 
-    // Optional third group (build number) — tricky because it may run into n_types
-    let mut build = String::new();
+    // Optional third group (build number) — tricky because it may run into
+    // n_types, because newline stripping can concatenate them. Only where the
+    // split falls matters: the build digits themselves are never used, the
+    // group's mere presence is what says a base schema is named.
     if input.starts_with('_') {
         input = &input[1..];
         // Read ALL consecutive digits greedily
@@ -1884,7 +1885,6 @@ pub fn parse_tline(body: &str) -> crate::error::Result<TLine> {
                 }
             }
         }
-        build = all_digits[..best_split].to_string();
         // Put the remaining digits back into input
         let remaining = &all_digits[best_split..];
         // We need to reconstruct input with the remaining digits prepended

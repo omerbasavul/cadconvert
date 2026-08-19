@@ -122,7 +122,7 @@ struct InlineSchema {
 /// `input` must have newlines already stripped.
 /// `partition_count` is from the preamble (usually 0).
 pub fn parse_entities(input: &mut &str, partition_count: usize) -> Result<Vec<RawEntity>> {
-    parse_entities_opt(input, partition_count, true, 0)
+    parse_entities_opt(input, partition_count, true, 0).map(|(e, _)| e)
 }
 
 /// Like [`parse_entities`], but `inline_schemas` selects the stream dialect.
@@ -136,9 +136,10 @@ pub fn parse_entities_opt(
     partition_count: usize,
     inline_schemas: bool,
     key_major: u32,
-) -> Result<Vec<RawEntity>> {
+) -> Result<(Vec<RawEntity>, Option<Truncation>)> {
     let mut schema_cache: HashMap<u16, InlineSchema> = HashMap::new();
     let mut entities: Vec<RawEntity> = Vec::new();
+    let mut truncated: Option<Truncation> = None;
 
     loop {
         token::ws(input).map_err(|_| XtError::UnexpectedEof)?;
@@ -219,16 +220,44 @@ pub fn parse_entities_opt(
                 entities.push(entity)
             }
             Err(e) => {
-                eprintln!(
-                    "[xt-parser] stopped at type_id={} after {} entities: {}",
-                    type_id, entities.len(), e
-                );
+                truncated = Some(Truncation {
+                    type_id,
+                    entities_read: entities.len(),
+                    detail: e.to_string(),
+                });
                 break;
             }
         }
     }
 
-    Ok(entities)
+    Ok((entities, truncated))
+}
+
+/// Where an entity stream stopped short, and why.
+///
+/// The stream is read until it ends or an entity cannot be understood. Stopping
+/// early is not the same as reaching the end: the entities read so far are
+/// usable, but the topology built from them will be missing whatever came
+/// after. Reporting that only on stderr — as this did — let a caller checking
+/// the `Result` see a clean success over a body with no faces at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Truncation {
+    /// The entity type that could not be read.
+    pub type_id: u16,
+    /// How many entities were read before it.
+    pub entities_read: usize,
+    /// The parse error.
+    pub detail: String,
+}
+
+impl std::fmt::Display for Truncation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "stopped at type_id={} after {} entities: {}",
+            self.type_id, self.entities_read, self.detail
+        )
+    }
 }
 
 // ── Inline schema reading ───────────────────────────────────────────────────

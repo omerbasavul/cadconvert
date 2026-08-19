@@ -34,13 +34,19 @@ pub use types::*;
 use std::path::Path;
 
 /// Parse an XT file from a file path.
+///
+/// The header is not UTF-8. Its `DATE=` and `USER=` fields carry whatever the
+/// writing machine's code page produced — a Solid Edge export from a Turkish
+/// Windows holds CP1254 bytes for `Çar, Ağu` — so the file is read as bytes and
+/// decoded lossily. The entity stream itself is pure ASCII, so replacing an
+/// undecodable byte can only ever affect a header string, never geometry.
 pub fn parse_xt_file<P: AsRef<Path>>(path: P) -> Result<XtFile> {
     let path = path.as_ref();
-    let text = std::fs::read_to_string(path).map_err(|e| XtError::Io {
+    let bytes = std::fs::read(path).map_err(|e| XtError::Io {
         path: path.to_path_buf(),
         source: e,
     })?;
-    parse_xt(&text)
+    parse_xt(&String::from_utf8_lossy(&bytes))
 }
 
 /// Parse an XT file from a string.
@@ -87,7 +93,7 @@ pub fn parse_xt(text: &str) -> Result<XtFile> {
     };
 
     // Phase 3: Parse entities.
-    let entities = entity::parse_entities_opt(
+    let (entities, truncated) = entity::parse_entities_opt(
         &mut input,
         partition_count,
         tline.has_base_schema,
@@ -97,7 +103,11 @@ pub fn parse_xt(text: &str) -> Result<XtFile> {
     // Phase 4: Build typed IR.
     let bodies = build::build_bodies(&entities)?;
 
-    Ok(XtFile { header, bodies })
+    Ok(XtFile {
+        header,
+        bodies,
+        truncated,
+    })
 }
 
 #[cfg(test)]
@@ -173,12 +183,20 @@ mod sample_tests {
             return;
         }
 
-        let mut failed = Vec::new();
-        let mut empty = Vec::new();
+        // The 36 MB Solid Edge export uses a PS 37 schema with entity types this
+        // parser does not model yet. It is expected to truncate, and the point
+        // of the test is that it says so.
+        const KNOWN_TRUNCATING: &str = "910 2001 007.x_t";
+
+        let mut problems = Vec::new();
         for path in &files {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             match crate::parse_xt_file(path) {
-                Err(e) => failed.push(format!("{name}: {e}")),
+                Err(e) => problems.push(format!("{name}: failed to parse: {e}")),
                 Ok(file) => {
                     let faces: usize = file
                         .bodies
@@ -186,22 +204,41 @@ mod sample_tests {
                         .flat_map(|b| b.shells.iter())
                         .map(|s| s.faces.len())
                         .sum();
-                    if file.bodies.is_empty() || faces == 0 {
-                        empty.push(format!("{name}: {} bodies, {faces} faces", file.bodies.len()));
+                    match &file.truncated {
+                        Some(t) if name == KNOWN_TRUNCATING => {
+                            assert!(
+                                t.entities_read > 0,
+                                "{name} truncated before reading anything"
+                            );
+                        }
+                        Some(t) => problems.push(format!("{name}: {t}")),
+                        None if file.bodies.is_empty() || faces == 0 => problems.push(format!(
+                            "{name}: parsed cleanly but produced {} bodies and {faces} faces",
+                            file.bodies.len()
+                        )),
+                        None => {}
                     }
                 }
             }
         }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
 
-        // The 36 MB Solid Edge export uses a PS 37 schema with entity types this
-        // parser does not model yet, so it is expected to fail until it does.
-        let unexpected: Vec<_> = failed
-            .iter()
-            .filter(|f| !f.starts_with("910 2001 007.x_t"))
-            .collect();
-        assert!(
-            unexpected.is_empty() && empty.is_empty(),
-            "parse failures: {unexpected:#?}\nempty results: {empty:#?}"
-        );
+    /// A stream that stops short must say so on the value, not only on stderr.
+    #[test]
+    fn a_truncated_stream_is_reported_on_the_file() {
+        let Some(dir) = sample_dir() else {
+            eprintln!("no sample directory; skipping");
+            return;
+        };
+        let big = dir.join("910 2001 007.x_t");
+        if !big.exists() {
+            return;
+        }
+        let file = crate::parse_xt_file(&big).expect("the header is not UTF-8 but must still read");
+        let t = file
+            .truncated
+            .expect("this file is known to stop at an unmodelled entity type");
+        assert_eq!(t.type_id, 80, "the failing type moved: {t}");
     }
 }

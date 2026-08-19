@@ -14,7 +14,7 @@ fn main() {
     } else {
         0
     };
-    let entities = xt_parser::entity::parse_entities_opt(
+    let (entities, truncated) = xt_parser::entity::parse_entities_opt(
         &mut input,
         partition_count,
         tline.has_base_schema,
@@ -22,6 +22,9 @@ fn main() {
     )
     .unwrap();
 
+    if let Some(t) = truncated {
+        eprintln!("[xt-parser] {t}");
+    }
     let n = entities.len();
     for (i, e) in entities.iter().enumerate().skip(n.saturating_sub(5)) {
         eprintln!("[{:3}] type={:3} idx={:4} fields={} var_f64={} var_i16={} var_ptr={} var_char={}",

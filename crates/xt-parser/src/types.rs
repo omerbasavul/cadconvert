@@ -7,6 +7,14 @@ use std::collections::HashMap;
 pub struct XtFile {
     pub header: XtHeader,
     pub bodies: Vec<XtBody>,
+    /// Set when the entity stream could not be read to its end.
+    ///
+    /// The bodies are still whatever could be built from the entities that were
+    /// read, which is often nothing useful — a truncated stream typically loses
+    /// the topology chain. A caller that only checks the `Result` would see a
+    /// clean success over an empty body, so this makes the shortfall part of
+    /// the value rather than a line on stderr.
+    pub truncated: Option<crate::entity::Truncation>,
 }
 
 /// Metadata extracted from the XT header block.

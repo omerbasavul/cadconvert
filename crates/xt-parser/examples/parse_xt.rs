@@ -8,6 +8,10 @@ fn main() {
             println!("Version: {}", file.header.version);
             println!("Application: {}", file.header.application);
             println!("Schema: {}", file.header.schema_key);
+            if let Some(t) = &file.truncated {
+                eprintln!("[xt-parser] {t}");
+                eprintln!("[xt-parser] the topology below is only what survived");
+            }
             println!("Bodies: {}", file.bodies.len());
             for (i, body) in file.bodies.iter().enumerate() {
                 println!(
