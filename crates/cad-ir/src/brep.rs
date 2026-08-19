@@ -354,6 +354,47 @@ impl Solid {
         b
     }
 
+    /// A trustworthy bound on where the body actually is.
+    ///
+    /// Takes the topological vertices and the extents of the analytic conics,
+    /// and deliberately takes neither spline control points nor edge parameter
+    /// ranges. Control points can sit metres outside a curve they only pull on
+    /// through a near-zero weight; parameter ranges are the very thing a caller
+    /// wanting this bound is usually trying to check. Conics are included
+    /// because a body whose faces are all periodic — a plain shaft, a washer —
+    /// has almost no vertices, and its circles are exactly where it is.
+    ///
+    /// Falls back to [`Solid::rough_bounds`] for a body made only of splines.
+    pub fn geometric_bounds(&self) -> Aabb {
+        let mut b = self.vertex_bounds();
+        // With a decent number of vertices the body's extent is already
+        // settled, and adding conics can only make it worse: a cylinder cut by
+        // a nearly parallel plane produces an ellipse metres across of which
+        // the model uses a millimetre, and taking its full extent would put the
+        // reference right back where the vertices already ruled it out.
+        if self.vertices.len() >= 8 && !b.is_empty() {
+            return b;
+        }
+        for c in &self.curves {
+            let (frame, reach) = match c {
+                Curve::Circle { frame, radius } => (frame, radius.abs()),
+                Curve::Ellipse {
+                    frame,
+                    semi_major,
+                    semi_minor,
+                } => (frame, semi_major.abs().max(semi_minor.abs())),
+                _ => continue,
+            };
+            if !reach.is_finite() || !frame.origin.is_finite() {
+                continue;
+            }
+            let r = Vec3::new(reach, reach, reach);
+            b.add_point(frame.origin - r);
+            b.add_point(frame.origin + r);
+        }
+        if b.is_empty() { self.rough_bounds() } else { b }
+    }
+
     /// A bound on the solid, from its vertices and any explicit control points.
     ///
     /// Cheap and conservative: it does not evaluate curves or surfaces, so a
@@ -438,6 +479,73 @@ mod tests {
         let b = s.rough_bounds();
         assert_eq!(b.min, Vec3::new(-2.0, 0.0, 0.0));
         assert_eq!(b.max, Vec3::new(1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn geometric_bounds_covers_a_body_that_has_no_vertices() {
+        use crate::math::Frame;
+        // A plain shaft: two circles, no vertices at all.
+        let s = Solid {
+            curves: vec![
+                Curve::Circle {
+                    frame: Frame::new(Vec3::ZERO, Vec3::Z, Vec3::X),
+                    radius: 10.0,
+                },
+                Curve::Circle {
+                    frame: Frame::new(Vec3::new(0.0, 0.0, 25.0), Vec3::Z, Vec3::X),
+                    radius: 10.0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(s.vertex_bounds().is_empty());
+        let b = s.geometric_bounds();
+        // Falling back to the conics is exactly what a body with no vertices
+        // needs, and only such a body gets it.
+        assert!(!b.is_empty());
+        assert!(b.size().x >= 20.0, "got {:?}", b.size());
+        assert!(b.size().z >= 25.0, "got {:?}", b.size());
+    }
+
+    #[test]
+    fn geometric_bounds_prefers_vertices_once_there_are_enough() {
+        use crate::math::Frame;
+        let s = Solid {
+            vertices: (0..12)
+                .map(|i| Vec3::new(i as f64, 0.0, 0.0))
+                .collect(),
+            // A vast near-degenerate ellipse the body barely touches.
+            curves: vec![Curve::Ellipse {
+                frame: Frame::new(Vec3::new(0.0, 0.0, 5000.0), Vec3::Z, Vec3::X),
+                semi_major: 4000.0,
+                semi_minor: 0.1,
+            }],
+            ..Default::default()
+        };
+        assert!(s.geometric_bounds().diagonal() < 20.0, "{:?}", s.geometric_bounds());
+    }
+
+    #[test]
+    fn geometric_bounds_ignores_a_far_flung_control_point() {
+        let s = Solid {
+            vertices: vec![Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)],
+            curves: vec![Curve::Nurbs(NurbsCurve {
+                degree: 2,
+                // The middle control point of a near-degenerate rational conic,
+                // held back by a weight close to zero.
+                control_points: vec![
+                    Vec3::ZERO,
+                    Vec3::new(5000.0, 0.0, 0.0),
+                    Vec3::new(10.0, 0.0, 0.0),
+                ],
+                weights: vec![1.0, 1e-4, 1.0],
+                knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                closed: false,
+            })],
+            ..Default::default()
+        };
+        assert!(s.rough_bounds().size().x > 4000.0);
+        assert!(s.geometric_bounds().size().x < 11.0);
     }
 
     #[test]

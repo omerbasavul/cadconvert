@@ -41,11 +41,72 @@ impl Chain {
 
 /// Discretise every edge of a solid, in parallel.
 pub fn discretise_all(solid: &Solid, options: &Resolved) -> Vec<Chain> {
+    // The body's own extent, used to catch an edge whose parameter range was
+    // recovered as the wrong arc. A reader inverts an edge's two vertices onto
+    // its curve and has to choose which of the two arcs between them the edge
+    // is; on a nearly degenerate conic the two vertices can invert to the same
+    // parameter, and the choice becomes a coin toss between a hair-thin arc and
+    // a five-metre one inside a half-metre body.
+    let reference = solid.geometric_bounds();
     solid
         .edges
         .par_iter()
-        .map(|e| discretise(solid, e, options))
+        .map(|e| {
+            let chain = discretise(solid, e, options);
+            repair_runaway(solid, e, chain, &reference, options)
+        })
         .collect()
+}
+
+/// Replace a chain that leaves the body with a better-founded one.
+///
+/// Tries the complementary arc first, since a wrong choice between the two arcs
+/// of a periodic curve is the cause; falls back to the straight chord between
+/// the vertices, which is wrong but bounded, and is at least the right shape
+/// for the short arc it was supposed to be.
+fn repair_runaway(
+    solid: &Solid,
+    edge: &Edge,
+    chain: Chain,
+    reference: &cad_ir::math::Aabb,
+    options: &Resolved,
+) -> Chain {
+    if reference.is_empty() {
+        return chain;
+    }
+    let centre = reference.centre();
+    let limit = reference.diagonal() + options.sag * 16.0;
+    let escapes = |c: &Chain| c.points.iter().any(|p| (*p - centre).length() > limit);
+    if !escapes(&chain) {
+        return chain;
+    }
+
+    let curve = &solid.curves[edge.curve.index()];
+    if let Some(period) = curve.period() {
+        // The complement runs from where this arc ends back round to where it
+        // began.
+        let complement = Interval::new(edge.range.hi, edge.range.lo + period);
+        if complement.span() > 0.0 {
+            let alternative = discretise(
+                solid,
+                &Edge {
+                    range: complement,
+                    ..edge.clone()
+                },
+                options,
+            );
+            if !escapes(&alternative) {
+                return alternative;
+            }
+        }
+    }
+
+    let start = solid.vertices[edge.start.index()];
+    let end = solid.vertices[edge.end.index()];
+    Chain {
+        points: vec![start, end],
+        params: vec![edge.range.lo, edge.range.hi],
+    }
 }
 
 /// Sample one edge.

@@ -210,7 +210,7 @@ impl Scene {
             .collect()
     }
 
-    /// World-space bounds taken from topological vertices only.
+    /// World-space bounds taken from vertices and analytic conics.
     ///
     /// The scale a relative tessellation tolerance should be measured against:
     /// it is available before any mesh exists, and unlike [`Scene::bounds`] it
@@ -221,7 +221,7 @@ impl Scene {
         for inst in self.instances() {
             let g = self.geometry_of(inst.geometry);
             if let Some(solid) = &g.brep {
-                let local = solid.vertex_bounds();
+                let local = solid.geometric_bounds();
                 if !local.is_empty() {
                     b = b.union(&local.transformed(&inst.transform));
                 }

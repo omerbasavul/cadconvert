@@ -170,6 +170,17 @@ pub fn tessellate(
         }
     }
 
+    // The extent of the boundary the *file* supplied, captured before any seam
+    // or pole ring is synthesised. Measuring the finished patch against a
+    // boundary the tessellator invented would let a bad invention validate
+    // itself.
+    let mut boundary = cad_ir::math::Aabb::EMPTY;
+    for l in &loops {
+        for p in &l.xyz {
+            boundary.add_point(*p);
+        }
+    }
+
     let (outer, holes) = if loops.is_empty() {
         // A whole sphere or torus is written with no bounds at all: the surface
         // is closed in both directions, so there is nothing to trim.
@@ -187,11 +198,10 @@ pub fn tessellate(
         ));
     }
 
-    // The boundary's own extent, kept so the finished patch can be checked
-    // against it.
-    let mut boundary = cad_ir::math::Aabb::EMPTY;
-    for p in outer.xyz.iter().chain(holes.iter().flat_map(|h| h.xyz.iter())) {
-        boundary.add_point(*p);
+    if boundary.is_empty() {
+        for p in outer.xyz.iter().chain(holes.iter().flat_map(|h| h.xyz.iter())) {
+            boundary.add_point(*p);
+        }
     }
 
     let patch = triangulate(surface, &domain, outer, holes, scale, options, face.same_sense)?;
@@ -449,7 +459,7 @@ fn wrapped_region(
                 .iter()
                 .map(|p| (*p - ring.xyz[0]).length())
                 .fold(0.0f64, f64::max);
-            if girth > 0.0 && reach > girth * 64.0 {
+            if girth > 0.0 && reach > girth * 8.0 {
                 return Err(format!(
                     "one wrapping loop, and the domain edge it would close onto is \
                      {reach:.1} away from a loop only {girth:.1} across"

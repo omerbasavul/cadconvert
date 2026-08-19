@@ -415,7 +415,7 @@ impl<'a> SolidBuilder<'a> {
         let same_sense = a.next_bool()?.unwrap_or(true);
         let curve = self.intern_curve(curve_ref)?;
 
-        let range = self.edge_range(curve, start, end);
+        let range = self.edge_range(curve, start, end, same_sense);
 
         let eid = EdgeId(self.solid.edges.len() as u32);
         self.solid.edges.push(Edge {
@@ -431,7 +431,19 @@ impl<'a> SolidBuilder<'a> {
     }
 
     /// Recover the curve parameters of an edge's two vertices.
-    fn edge_range(&self, curve: CurveId, start: VertexId, end: VertexId) -> Interval {
+    ///
+    /// `same_sense` decides which of the two arcs between them the edge is. On
+    /// a periodic curve the vertices alone cannot say: two points 0.004 rad
+    /// apart bound both a 0.004 rad arc and a 6.279 rad one, and picking the
+    /// wrong one puts an edge most of the way around an ellipse that may be
+    /// half a metre across.
+    fn edge_range(
+        &self,
+        curve: CurveId,
+        start: VertexId,
+        end: VertexId,
+        same_sense: bool,
+    ) -> Interval {
         let c = &self.solid.curves[curve.index()];
         let natural = c.natural_range();
         let p0 = self.solid.vertices[start.index()];
@@ -444,23 +456,40 @@ impl<'a> SolidBuilder<'a> {
             return natural;
         };
 
-        // Both ends at the same point means the edge closes on itself: a seam,
-        // or a whole circle written as one edge.
+        // An edge whose two vertices coincide is the whole closed curve — but
+        // only when they also coincide in *parameter*. Position alone is not
+        // enough: a cylinder cut by a nearly parallel plane produces an ellipse
+        // metres across, and a short arc of it has end points a hundredth of a
+        // millimetre apart while spanning 0.002 rad. Reading that as a full
+        // turn puts a 5 m curve into a 0.5 m body.
         let vertex_tol = (self.solid.tolerance * 10.0).max(1e-9);
-        let closes_on_itself = (p1 - p0).length_squared() <= vertex_tol * vertex_tol;
+        let coincident = (p1 - p0).length_squared() <= vertex_tol * vertex_tol;
 
         match c.period() {
             Some(period) => {
-                if closes_on_itself {
+                let gap = ((t1 - t0) % period + period) % period;
+                let same_parameter =
+                    gap <= period * 1e-6 || gap >= period * (1.0 - 1e-6);
+                if coincident && same_parameter {
                     Interval::new(t0, t0 + period)
-                } else {
-                    // Anything else advances forward from t0, so a t1 at or
-                    // below it has wrapped past the seam.
+                } else if same_sense {
+                    // The edge runs the way the curve does, so it leaves the
+                    // start parameter and advances; a t1 at or below t0 has
+                    // wrapped past the seam.
                     let mut hi = t1;
                     while hi <= t0 + 1e-12 {
                         hi += period;
                     }
                     Interval::new(t0, hi)
+                } else {
+                    // The edge runs against the curve, so in increasing
+                    // parameter it is the arc from the end vertex up to the
+                    // start vertex.
+                    let mut hi = t0;
+                    while hi <= t1 + 1e-12 {
+                        hi += period;
+                    }
+                    Interval::new(t1, hi)
                 }
             }
             None => {
@@ -471,7 +500,7 @@ impl<'a> SolidBuilder<'a> {
                 // edge spans the curve's whole domain.
                 let span = Interval::new(t0.min(t1), t0.max(t1));
                 let degenerate = span.span() <= 1e-12 * natural.span().abs().max(1.0);
-                if degenerate && closes_on_itself && self.curve_closes(c, natural, vertex_tol) {
+                if degenerate && coincident && self.curve_closes(c, natural, vertex_tol) {
                     natural
                 } else {
                     span
@@ -518,10 +547,34 @@ pub fn diagnose(solid: &Solid) -> Vec<String> {
             out.push(format!("face {i} names surface {} out of range", f.surface.0));
         }
     }
+    // The strongest single check on the geometry: evaluating an edge's curve at
+    // the two ends of its recovered range must land on the edge's own vertices.
+    // A misread spline — a shifted field, a dropped weight — fails this by
+    // metres, long before it shows up as a strange-looking mesh.
+    let scale = solid.geometric_bounds().diagonal().max(1.0);
+    let slack = (solid.tolerance * 100.0).max(scale * 1e-4);
+    let mut wandering = 0usize;
+    let mut worst = 0.0f64;
     for (i, e) in solid.edges.iter().enumerate() {
         if !e.range.span().is_finite() || e.range.span() <= 0.0 {
             out.push(format!("edge {i} has a degenerate range {:?}", e.range));
+            continue;
         }
+        let c = &solid.curves[e.curve.index()];
+        let (a, b) = (solid.vertices[e.start.index()], solid.vertices[e.end.index()]);
+        let (p, q) = (c.point_at(e.range.lo), c.point_at(e.range.hi));
+        // Either orientation is acceptable; the tessellator sorts that out.
+        let err = ((p - a).length() + (q - b).length())
+            .min((p - b).length() + (q - a).length());
+        if err > slack {
+            wandering += 1;
+            worst = worst.max(err);
+        }
+    }
+    if wandering > 0 {
+        out.push(format!(
+            "{wandering} edges whose curve does not pass through their vertices              (worst {worst:.1}, body spans {scale:.1})"
+        ));
     }
     // Every edge should be used by exactly two half-edges in a closed solid;
     // one means an open boundary, more than two means a non-manifold junction.

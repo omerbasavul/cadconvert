@@ -60,6 +60,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             *curve_kinds.entry(curve_name(c)).or_default() += 1;
         }
     }
+    // How many splines are rational, checked against the file's own count of
+    // RATIONAL_B_SPLINE_* records: a mismatch means weights were dropped, and a
+    // spline evaluated without its weights still interpolates its end points,
+    // so nothing downstream would notice until the middle bulges away.
+    let mut rational_curves = 0usize;
+    let mut rational_surfaces = 0usize;
+    let mut nurbs_curves = 0usize;
+    let mut nurbs_surfaces = 0usize;
+    for g in &scene.geometry {
+        let Some(s) = &g.brep else { continue };
+        for c in &s.curves {
+            if let cad_ir::Curve::Nurbs(n) = c {
+                nurbs_curves += 1;
+                if !n.weights.is_empty() {
+                    rational_curves += 1;
+                }
+            }
+        }
+        for x in &s.surfaces {
+            if let cad_ir::Surface::Nurbs(n) = x {
+                nurbs_surfaces += 1;
+                if !n.weights.is_empty() {
+                    rational_surfaces += 1;
+                }
+            }
+        }
+    }
+    println!("\n-- splines --");
+    println!("  curves      {nurbs_curves} of which {rational_curves} rational");
+    println!("  surfaces    {nurbs_surfaces} of which {rational_surfaces} rational");
+
     println!("\n-- b-rep --");
     println!("  faces       {faces}");
     println!("  edges       {edges}");

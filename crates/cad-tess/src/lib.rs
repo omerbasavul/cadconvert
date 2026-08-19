@@ -145,17 +145,17 @@ pub fn tessellate_solid(
     // periodic — a plain shaft has no vertices at all — but where there are
     // plenty they are a sound reference, and a patch far outside them points at
     // a face whose parameter region was reconstructed wrongly.
-    let reference = solid.rough_bounds();
-    let trace_strays = std::env::var_os("CAD_TESS_TRACE_STRAY").is_some()
-        && !reference.is_empty()
-        && solid.vertices.len() > 16;
+    let reference = solid.geometric_bounds();
+    let trace_strays = std::env::var_os("CAD_TESS_TRACE_STRAY")
+        .is_some_and(|v| v.to_string_lossy() == "1" || name.contains(&*v.to_string_lossy()))
+        && !reference.is_empty();
 
     for (_shell, fid, result) in faces {
         match result {
             Ok(patch) if !patch.indices.is_empty() => {
                 if trace_strays {
                     let centre = reference.centre();
-                    let limit = reference.diagonal();
+                    let limit = reference.diagonal().max(1.0) * 2.0;
                     let worst = patch
                         .positions
                         .iter()
@@ -167,16 +167,31 @@ pub fn tessellate_solid(
                         .fold(0.0f64, f64::max);
                     if worst > limit {
                         let f = solid.face(fid);
+                        let edges_desc: Vec<String> = f
+                            .bounds
+                            .iter()
+                            .flat_map(|b| b.halves.iter())
+                            .map(|h| {
+                                let e = solid.edge(h.edge);
+                                let c = solid.curve(e.curve);
+                                let a = solid.vertex(e.start);
+                                let z = solid.vertex(e.end);
+                                let mid = c.point_at(e.range.at(0.5));
+                                format!(
+                                    "{:?}/range[{:.4},{:.4}]/mid{:.0}",
+                                    std::mem::discriminant(c),
+                                    e.range.lo,
+                                    e.range.hi,
+                                    (mid - (a + z) * 0.5).length()
+                                )
+                            })
+                            .collect();
                         eprintln!(
                             "[stray] {name} face {} reaches {worst:.1} (body spans {limit:.1}) \
-                             surface={:?} bounds={} halves={:?}",
+                             surface={:?} edges={:?}",
                             fid.0,
                             std::mem::discriminant(solid.surface(f.surface)),
-                            f.bounds.len(),
-                            f.bounds
-                                .iter()
-                                .map(|b| b.halves.len())
-                                .collect::<Vec<_>>()
+                            edges_desc
                         );
                     }
                 }

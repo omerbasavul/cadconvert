@@ -109,6 +109,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Write the result out, which is the only check that matters in the end.
+    // Never write next to the user's source files.
+    let out_dir = std::env::var("CAD_OUT").unwrap_or_else(|_| "out".into());
+    std::fs::create_dir_all(&out_dir)?;
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let out = std::path::Path::new(&out_dir).join(format!("{stem}.glb"));
+    let t3 = Instant::now();
+    let plain = cad_export::glb::write_file(&scene, &cad_export::Options::default(), &out)?;
+    let write_ms = t3.elapsed().as_secs_f64() * 1e3;
+
+    let compact_path = std::path::Path::new(&out_dir).join(format!("{stem}.compact.glb"));
+    let compact =
+        cad_export::glb::write_file(&scene, &cad_export::Options::compact(), &compact_path)?;
+
+    println!("\n-- glb --");
+    println!(
+        "  {}  {:.2} MB   written in {write_ms:.0} ms",
+        out.display(),
+        plain as f64 / 1e6
+    );
+    println!(
+        "  {}  {:.2} MB   ({:.0}% of plain)",
+        compact_path.display(),
+        compact as f64 / 1e6,
+        compact as f64 / plain as f64 * 100.0
+    );
+
+    // Which placement reaches furthest, so an outlier can be named rather than
+    // just widening the scene's box anonymously.
+    let mut placed: Vec<(String, f64, f64)> = scene
+        .instances()
+        .iter()
+        .filter_map(|i| {
+            let g = scene.geometry_of(i.geometry);
+            let m = g.mesh.as_ref()?;
+            let bb = m.bounds().transformed(&i.transform);
+            (!bb.is_empty()).then(|| {
+                (
+                    g.name.clone(),
+                    bb.centre().length(),
+                    bb.diagonal(),
+                )
+            })
+        })
+        .collect();
+    placed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    println!("\n-- furthest placements (mm from origin) --");
+    for (name, dist, size) in placed.iter().take(5) {
+        println!("  {name:<24} centre {dist:>9.1}   size {size:>8.1}");
+    }
+
     let b = scene.bounds();
     println!("\n-- extent (mm) --");
     println!(
