@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "cad-ir"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "cad-step"
 version = "0.1.0"
 dependencies = [
