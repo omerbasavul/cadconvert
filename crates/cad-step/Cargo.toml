@@ -6,6 +6,7 @@ license.workspace = true
 description = "Fast reader for ISO 10303-21 (STEP Part 21) files — AP203/AP214/AP242"
 
 [dependencies]
+cad-ir.workspace = true
 memchr.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true

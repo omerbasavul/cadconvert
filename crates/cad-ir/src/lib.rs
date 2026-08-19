@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod brep;
+pub mod eval;
 pub mod material;
 pub mod math;
 pub mod mesh;

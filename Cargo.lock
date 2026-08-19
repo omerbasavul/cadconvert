@@ -13,6 +13,7 @@ dependencies = [
 name = "cad-step"
 version = "0.1.0"
 dependencies = [
+ "cad-ir",
  "memchr",
  "rustc-hash",
  "thiserror",
