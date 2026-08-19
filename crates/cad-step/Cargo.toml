@@ -12,6 +12,7 @@ rustc-hash.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+xt-parser.workspace = true
 cad-ir.workspace = true
 cad-tess.workspace = true
 cad-export.workspace = true

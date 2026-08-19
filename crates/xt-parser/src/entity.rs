@@ -284,15 +284,38 @@ fn read_inline_schema_path_a(
     }
 
     let mut fields: Vec<FieldDesc> = Vec::new();
-    let mut base_idx: usize = 0;
+
+    // The annotation chars index the base's *logical* fields — one per schema
+    // declaration — while `base.fields` stores multi-element declarations
+    // pre-expanded (ATTRIB_DEF's `actions; u; 1 0 8` is eight slots). Walk the
+    // two in step: `logical_idx` counts declarations, `slot_idx` counts
+    // expanded slots, and each logical field covers `span(logical_idx)` slots.
+    // Advancing one slot per `C` — the old behaviour — desynchronised after
+    // the first multi-element field, which is what stopped every Solid Edge
+    // export at its first ATTRIB_DEF.
+    let span = |logical_idx: usize| -> usize {
+        base.logical_spans
+            .as_ref()
+            .and_then(|s| s.get(logical_idx).copied())
+            .unwrap_or(1)
+    };
+    let n_logical = base
+        .logical_spans
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(base.fields.len());
+    let mut logical_idx: usize = 0;
+    let mut slot_idx: usize = 0;
 
     loop {
         let ch = read_raw_byte(input)?;
         match ch {
             'C' => {
-                if base_idx < base.fields.len() {
-                    fields.push(field_desc_from_base(base.fields[base_idx]));
-                } else if base.is_variable && base_idx == base.fields.len() {
+                if logical_idx < n_logical {
+                    for k in 0..span(logical_idx) {
+                        fields.push(field_desc_from_base(base.fields[slot_idx + k]));
+                    }
+                } else if base.is_variable && logical_idx == n_logical {
                     // `base.fields` holds only the fixed fields; a variable base
                     // declares one more, the trailing array. A `C` landing on it
                     // copies that array, which read_entity_fields reads on its
@@ -311,10 +334,12 @@ fn read_inline_schema_path_a(
                         element_type: false,
                     });
                 }
-                base_idx += 1;
+                slot_idx += span(logical_idx);
+                logical_idx += 1;
             }
             'D' => {
-                base_idx += 1;
+                slot_idx += span(logical_idx);
+                logical_idx += 1;
             }
             'I' | 'A' => {
                 let fd = read_field_descriptor(input)?;

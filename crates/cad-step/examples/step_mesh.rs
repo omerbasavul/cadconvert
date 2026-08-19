@@ -36,6 +36,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     opts.materials.no_inference = std::env::var_os("CAD_NO_INFER").is_some();
 
+    // A Parasolid twin of the same model carries designer-assigned appearance
+    // the STEP dropped — most usefully per-face reflectivity, which decides
+    // metal vs matte as a stated fact rather than a guess from the colour.
+    // Auto-detect a sibling `<same stem>.x_t`; disable with CAD_NO_XT_TWIN=1.
+    if std::env::var_os("CAD_NO_XT_TWIN").is_none() {
+        let twin = std::path::Path::new(&path).with_extension("x_t");
+        if twin.exists() {
+            match std::fs::read(&twin) {
+                Ok(bytes) => {
+                    match xt_parser::appearance::appearance_hints(&String::from_utf8_lossy(&bytes))
+                    {
+                        Ok(hints) => {
+                            let refl = hints.reflectivity_by_colour();
+                            let metals = refl.values().filter(|&&r| r >= 0.5).count();
+                            println!(
+                                "  x_t twin    {} colours, {metals} reflective — designer \
+                                 metal/matte applied",
+                                refl.len()
+                            );
+                            opts.materials.reflectivity_by_colour = refl;
+                        }
+                        Err(e) => eprintln!("[x_t twin] unreadable, ignored: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("[x_t twin] unreadable, ignored: {e}"),
+            }
+        }
+    }
+
     let t1 = Instant::now();
     let (mut scene, _) = lower::asm::to_scene_with(&file, &opts)?;
     let lower_ms = t1.elapsed().as_secs_f64() * 1e3;

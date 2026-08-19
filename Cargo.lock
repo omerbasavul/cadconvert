@@ -77,6 +77,7 @@ dependencies = [
  "memchr",
  "rustc-hash",
  "thiserror",
+ "xt-parser",
 ]
 
 [[package]]

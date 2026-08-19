@@ -20,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod appearance;
 pub mod build;
 pub mod entity;
 pub mod error;
@@ -183,10 +184,10 @@ mod sample_tests {
             return;
         }
 
-        // The 36 MB Solid Edge export uses a PS 37 schema with entity types this
-        // parser does not model yet. It is expected to truncate, and the point
-        // of the test is that it says so.
-        const KNOWN_TRUNCATING: &str = "910 2001 007.x_t";
+        // The 36 MB Solid Edge export parses to its end since the ATTRIB_DEF
+        // annotation fix, but its PS 37 BODY layout is not yet built into the
+        // typed IR, so it legitimately reports bodies without faces.
+        const KNOWN_UNBUILT: &str = "910 2001 007.x_t";
 
         let mut problems = Vec::new();
         for path in &files {
@@ -205,13 +206,13 @@ mod sample_tests {
                         .map(|s| s.faces.len())
                         .sum();
                     match &file.truncated {
-                        Some(t) if name == KNOWN_TRUNCATING => {
+                        Some(t) => problems.push(format!("{name}: {t}")),
+                        None if name == KNOWN_UNBUILT => {
                             assert!(
-                                t.entities_read > 0,
-                                "{name} truncated before reading anything"
+                                !file.bodies.is_empty(),
+                                "{name} parsed but produced no bodies at all"
                             );
                         }
-                        Some(t) => problems.push(format!("{name}: {t}")),
                         None if file.bodies.is_empty() || faces == 0 => problems.push(format!(
                             "{name}: parsed cleanly but produced {} bodies and {faces} faces",
                             file.bodies.len()
@@ -224,9 +225,11 @@ mod sample_tests {
         assert!(problems.is_empty(), "{problems:#?}");
     }
 
-    /// A stream that stops short must say so on the value, not only on stderr.
+    /// The Solid Edge export must parse to its end — it stopped at its first
+    /// ATTRIB_DEF for as long as the annotation cursor advanced one expanded
+    /// slot per `C` instead of one logical field.
     #[test]
-    fn a_truncated_stream_is_reported_on_the_file() {
+    fn the_solid_edge_export_parses_to_the_end() {
         let Some(dir) = sample_dir() else {
             eprintln!("no sample directory; skipping");
             return;
@@ -236,9 +239,11 @@ mod sample_tests {
             return;
         }
         let file = crate::parse_xt_file(&big).expect("the header is not UTF-8 but must still read");
-        let t = file
-            .truncated
-            .expect("this file is known to stop at an unmodelled entity type");
-        assert_eq!(t.type_id, 80, "the failing type moved: {t}");
+        assert!(
+            file.truncated.is_none(),
+            "regressed to truncating: {:?}",
+            file.truncated
+        );
+        assert!(!file.bodies.is_empty());
     }
 }

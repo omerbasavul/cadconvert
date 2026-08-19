@@ -19,6 +19,7 @@
 //! the table and disableable wholesale.
 
 use crate::material::{Material, MaterialClass};
+use std::collections::HashMap;
 
 impl MaterialClass {
     /// Classify an engineering material name.
@@ -307,6 +308,16 @@ pub struct MaterialResolver {
     /// Turn a colour with no other evidence into a material family. On by
     /// default; off, colours become the neutral dielectric they were before.
     pub no_inference: bool,
+    /// Designer-assigned reflectivity per colour (uppercase `RRGGBB`), 0..1.
+    ///
+    /// Recovered from a Parasolid twin's `SDL/TYSA_REFLECTIVITY` attributes,
+    /// which the STEP export drops. Where present this outranks colour
+    /// inference: the guess "mid grey is probably machined steel" is replaced
+    /// by the authoring tool's own statement of which faces are metal and
+    /// which are matte — in the pilot the two machined-metal colours carry 1.0
+    /// on every face and the painted castings 0.0, exactly the split a person
+    /// reads off the product photo.
+    pub reflectivity_by_colour: HashMap<String, f32>,
 }
 
 impl MaterialResolver {
@@ -328,6 +339,39 @@ impl MaterialResolver {
             .or_else(|| hex.as_deref().and_then(|h| self.table.colour_match(h)));
         if let Some(name) = named {
             return self.build_named(name, colour, hex.as_deref());
+        }
+
+        // Rung 2½: designer-assigned reflectivity, when a Parasolid twin
+        // supplied it. Metal or matte is then a stated fact, not a guess; only
+        // WHICH metal or WHICH matte family remains inferred from the colour.
+        if let (Some(c), Some(hex)) = (colour, hex.as_deref())
+            && !self.no_inference
+            && let Some(&refl) = self.reflectivity_by_colour.get(hex)
+        {
+            let value = c.srgb[0].max(c.srgb[1]).max(c.srgb[2]);
+            let class = if refl >= 0.5 {
+                if value >= 0.70 {
+                    MaterialClass::Aluminium
+                } else if value >= 0.28 {
+                    MaterialClass::Steel
+                } else {
+                    MaterialClass::CastIron
+                }
+            } else {
+                // Matte by the designer's own hand. Near-black stays rubber;
+                // everything else is a painted surface in its exact colour.
+                if value < 0.13 {
+                    MaterialClass::Rubber
+                } else {
+                    MaterialClass::Paint
+                }
+            };
+            let mut m = tinted(class, format!("{}-{hex}", class_slug(class)), Some(c));
+            if refl < 0.5 && class == MaterialClass::Paint {
+                // The preset paint is semi-gloss; the designer said matte.
+                m.roughness = 0.55;
+            }
+            return m;
         }
 
         // Rung 3: infer from the colour.
@@ -552,7 +596,7 @@ mod tests {
              default        = çelik\n",
         );
         assert!(errors.is_empty(), "{errors:?}");
-        let r = MaterialResolver { table, no_inference: false };
+        let r = MaterialResolver { table, ..Default::default() };
 
         // Part rule wins over what the colour would have inferred.
         let m = r.resolve("219 203 008", Some(ev("808080")));
@@ -576,7 +620,7 @@ mod tests {
     #[test]
     fn an_unclassifiable_table_name_keeps_the_name_and_shades_by_colour() {
         let (table, _) = MaterialTable::parse("part * = Unobtainium\n");
-        let r = MaterialResolver { table, no_inference: false };
+        let r = MaterialResolver { table, ..Default::default() };
         let m = r.resolve("anything", Some(ev("808080")));
         assert_eq!(m.name, "Unobtainium");
         // Grey tier → shaded as metal even though the name meant nothing.
@@ -605,6 +649,46 @@ mod tests {
         assert!(glob_match("aisi*", "AISI 304"));
         assert!(glob_match("exact", "EXACT"));
         assert!(!glob_match("exact", "exactly"));
+    }
+
+    #[test]
+    fn designer_reflectivity_outranks_colour_inference() {
+        let mut r = MaterialResolver::default();
+        // The pilot's measured split: bright and dark metal, matte mid-grey.
+        r.reflectivity_by_colour.insert("D1D1D1".into(), 1.0);
+        r.reflectivity_by_colour.insert("555759".into(), 1.0);
+        r.reflectivity_by_colour.insert("808080".into(), 0.0);
+        r.reflectivity_by_colour.insert("000000".into(), 0.0);
+
+        let m = r.resolve("x", Some(ev("D1D1D1")));
+        assert_eq!(m.metallic, 1.0);
+        assert!(m.name.starts_with("aluminium-"));
+
+        let m = r.resolve("x", Some(ev("555759")));
+        assert_eq!(m.metallic, 1.0, "dark but reflective is dark metal");
+
+        // Mid grey WOULD infer steel; the designer said matte, so it is paint.
+        let m = r.resolve("x", Some(ev("808080")));
+        assert_eq!(m.metallic, 0.0);
+        assert!(m.name.starts_with("paint-"));
+        assert!((m.roughness - 0.55).abs() < 1e-6, "matte, not semi-gloss");
+
+        let m = r.resolve("x", Some(ev("000000")));
+        assert_eq!(m.name, "rubber-000000");
+
+        // A colour the twin never saw still goes through inference.
+        let m = r.resolve("x", Some(ev("555555")));
+        assert_eq!(m.metallic, 1.0, "unlisted grey still infers steel");
+    }
+
+    #[test]
+    fn a_table_rule_still_beats_reflectivity() {
+        let (table, _) = MaterialTable::parse("color 808080 = AISI 304\n");
+        let mut r = MaterialResolver { table, ..Default::default() };
+        r.reflectivity_by_colour.insert("808080".into(), 0.0);
+        let m = r.resolve("x", Some(ev("808080")));
+        assert_eq!(m.name, "AISI 304", "the user's explicit word wins");
+        assert_eq!(m.metallic, 1.0);
     }
 
     #[test]

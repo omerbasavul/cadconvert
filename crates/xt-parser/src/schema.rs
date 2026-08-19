@@ -253,6 +253,16 @@ pub struct EntitySchema {
     /// (the integer read immediately after type_id). Used by types such as
     /// LIMIT (type 41) where the entity index encodes the number of points.
     pub entity_index_is_var_count: bool,
+    /// How the expanded `fields` group into the schema's *logical* fields.
+    ///
+    /// Inline annotation diffs (`C`/`D`/`I`) index logical fields — one per
+    /// schema declaration — but a multi-element declaration such as
+    /// ATTRIB_DEF's `actions; u; 1 0 8` is stored here pre-expanded into eight
+    /// slots. Advancing the annotation cursor one slot per `C` desynchronises
+    /// it after the first such field: the very failure that stopped every
+    /// Solid Edge export at its first ATTRIB_DEF. `None` means every field is
+    /// its own logical field, which is true for every type but 80.
+    pub logical_spans: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1054,6 +1064,14 @@ pub fn base_schema(type_id: u16) -> Option<EntitySchema> {
     // not from entity_index itself. This field is retained only as documentation.
     let entity_index_is_var_count = false;
 
+    // sch_13006 declares ATTRIB_DEF as six logical fields — next(p),
+    // identifier(p), type_id(d), actions(u×8), field_names(p),
+    // legal_owners(l×14) — which the expansion above flattens to 25 slots.
+    let logical_spans = match type_id {
+        ATTRIB_DEF => Some(vec![1, 1, 1, 8, 1, 14]),
+        _ => None,
+    };
+
     Some(EntitySchema {
         type_id,
         fields,
@@ -1061,6 +1079,7 @@ pub fn base_schema(type_id: u16) -> Option<EntitySchema> {
         var_type,
         var_count_field_idx,
         entity_index_is_var_count,
+        logical_spans,
     })
 }
 
@@ -1152,6 +1171,7 @@ pub fn base_version0_schema(type_id: u16) -> Option<EntitySchema> {
         var_type,
         var_count_field_idx,
         entity_index_is_var_count: false,
+            logical_spans: None,
     })
 }
 
@@ -1183,6 +1203,7 @@ pub fn standard_schema(type_id: u16, key_major: u32) -> Option<EntitySchema> {
                 var_type: None,
                 var_count_field_idx: None,
                 entity_index_is_var_count: false,
+            logical_spans: None,
             }),
 
             // ATTRIB_DEF has no field_names pointer before V20, and 13
@@ -1202,6 +1223,7 @@ pub fn standard_schema(type_id: u16, key_major: u32) -> Option<EntitySchema> {
                 var_type: Some(VarType::I16),
                 var_count_field_idx: None,
                 entity_index_is_var_count: false,
+            logical_spans: None,
             }),
 
             _ => base_schema(type_id),
@@ -1231,6 +1253,7 @@ pub fn standard_schema(type_id: u16, key_major: u32) -> Option<EntitySchema> {
             var_type: None,
             var_count_field_idx: None,
             entity_index_is_var_count: false,
+            logical_spans: None,
         }),
 
         // POINTER_LIS_BLOCK: one extra leading field before the base
@@ -1242,6 +1265,7 @@ pub fn standard_schema(type_id: u16, key_major: u32) -> Option<EntitySchema> {
             var_type: Some(VarType::Ptr),
             var_count_field_idx: None,
             entity_index_is_var_count: false,
+            logical_spans: None,
         }),
 
         _ => base_schema(type_id),
@@ -1278,6 +1302,7 @@ pub fn ps30_compact_schema(type_id: u16) -> Option<EntitySchema> {
             var_type: Some(VarType::F64),
             var_count_field_idx: Some(5),
             entity_index_is_var_count: false,
+            logical_spans: None,
         });
     }
 
@@ -1689,6 +1714,7 @@ pub fn ps30_compact_schema(type_id: u16) -> Option<EntitySchema> {
         var_type: None,
         var_count_field_idx: None,
         entity_index_is_var_count: false,
+            logical_spans: None,
     })
 }
 
@@ -1965,6 +1991,9 @@ pub fn apply_annotations(base: &EntitySchema, entry: &SchemaEntry) -> EntitySche
         var_type: base.var_type,
         var_count_field_idx: base.var_count_field_idx,
         entity_index_is_var_count: base.entity_index_is_var_count,
+        // The annotations have already been applied to `fields`, so the base's
+        // logical grouping no longer describes this layout.
+        logical_spans: None,
     }
 }
 
