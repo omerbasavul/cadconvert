@@ -4,4 +4,6 @@
 //! tessellator needs it for everything. Keeping it in the IR crate rather than
 //! either side means both are provably evaluating the same geometry.
 
+pub mod curve;
 pub mod nurbs;
+pub mod surface;
