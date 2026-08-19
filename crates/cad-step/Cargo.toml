@@ -1,0 +1,13 @@
+[package]
+name = "cad-step"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fast reader for ISO 10303-21 (STEP Part 21) files — AP203/AP214/AP242"
+
+[dependencies]
+memchr.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
