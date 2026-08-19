@@ -24,6 +24,7 @@ cad-step = { path = "crates/cad-step" }
 xt-parser = { path = "crates/xt-parser" }
 cad-tess = { path = "crates/cad-tess" }
 cad-export = { path = "crates/cad-export" }
+cad-xt = { path = "crates/cad-xt" }
 
 [profile.release]
 opt-level = 3

@@ -367,30 +367,43 @@ impl Solid {
     /// Falls back to [`Solid::rough_bounds`] for a body made only of splines.
     pub fn geometric_bounds(&self) -> Aabb {
         let mut b = self.vertex_bounds();
-        // With a decent number of vertices the body's extent is already
-        // settled, and adding conics can only make it worse: a cylinder cut by
-        // a nearly parallel plane produces an ellipse metres across of which
-        // the model uses a millimetre, and taking its full extent would put the
-        // reference right back where the vertices already ruled it out.
-        if self.vertices.len() >= 8 && !b.is_empty() {
-            return b;
-        }
+
+        // Circles always count: every circle of a B-Rep is an intersection
+        // ring sitting on the body, and its extent is bounded by its own
+        // radius. They are also the *only* extent witness a turned part has —
+        // its edges are all closed circles, whose seam vertices cluster at one
+        // angle and make the vertex box a thin sliver of the truth.
         for c in &self.curves {
-            let (frame, reach) = match c {
-                Curve::Circle { frame, radius } => (frame, radius.abs()),
-                Curve::Ellipse {
+            if let Curve::Circle { frame, radius } = c {
+                let reach = radius.abs();
+                if reach.is_finite() && frame.origin.is_finite() {
+                    let r = Vec3::new(reach, reach, reach);
+                    b.add_point(frame.origin - r);
+                    b.add_point(frame.origin + r);
+                }
+            }
+        }
+
+        // Ellipses only when vertices are too few to settle the extent: a
+        // cylinder cut by a nearly parallel plane produces an ellipse metres
+        // across of which the model uses a millimetre, and taking its full
+        // extent would drag the reference far outside the real body.
+        if self.vertices.len() < 8 {
+            for c in &self.curves {
+                if let Curve::Ellipse {
                     frame,
                     semi_major,
                     semi_minor,
-                } => (frame, semi_major.abs().max(semi_minor.abs())),
-                _ => continue,
-            };
-            if !reach.is_finite() || !frame.origin.is_finite() {
-                continue;
+                } = c
+                {
+                    let reach = semi_major.abs().max(semi_minor.abs());
+                    if reach.is_finite() && frame.origin.is_finite() {
+                        let r = Vec3::new(reach, reach, reach);
+                        b.add_point(frame.origin - r);
+                        b.add_point(frame.origin + r);
+                    }
+                }
             }
-            let r = Vec3::new(reach, reach, reach);
-            b.add_point(frame.origin - r);
-            b.add_point(frame.origin + r);
         }
         if b.is_empty() { self.rough_bounds() } else { b }
     }

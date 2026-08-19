@@ -268,6 +268,73 @@ impl Curve {
     }
 }
 
+/// Recover the parameter interval an edge spans from its two end points.
+///
+/// Exchange formats name an edge's end *vertices*, not the parameters at which
+/// they sit, so the interval has to be recovered by inversion — and on a
+/// periodic curve the answer is ambiguous by a full period. The rules, each
+/// paid for by a bug on real files (see the STEP reader's history):
+///
+/// * `forward` decides which of the two arcs between the points the edge is.
+/// * Coincident end points mean the whole closed curve only when the
+///   *parameters* also coincide — a huge near-degenerate ellipse has short
+///   arcs whose ends sit closer in space than the model tolerance.
+/// * A geometrically closed but non-periodic curve (a full circle exported as
+///   one spline) whose ends invert to the same parameter spans its whole
+///   domain rather than collapsing to nothing.
+pub fn recover_edge_range(
+    curve: &Curve,
+    start: crate::math::Vec3,
+    end: crate::math::Vec3,
+    forward: bool,
+    tolerance: f64,
+) -> Interval {
+    let natural = curve.natural_range();
+    let Some(t0) = curve.param_of(start, Some(natural.lo)) else {
+        return natural;
+    };
+    let Some(t1) = curve.param_of(end, Some(t0)) else {
+        return natural;
+    };
+
+    let vertex_tol = (tolerance * 10.0).max(1e-9);
+    let coincident = (end - start).length_squared() <= vertex_tol * vertex_tol;
+
+    match curve.period() {
+        Some(period) => {
+            let gap = ((t1 - t0) % period + period) % period;
+            let same_parameter = gap <= period * 1e-6 || gap >= period * (1.0 - 1e-6);
+            if coincident && same_parameter {
+                Interval::new(t0, t0 + period)
+            } else if forward {
+                let mut hi = t1;
+                while hi <= t0 + 1e-12 {
+                    hi += period;
+                }
+                Interval::new(t0, hi)
+            } else {
+                let mut hi = t0;
+                while hi <= t1 + 1e-12 {
+                    hi += period;
+                }
+                Interval::new(t1, hi)
+            }
+        }
+        None => {
+            let span = Interval::new(t0.min(t1), t0.max(t1));
+            let degenerate = span.span() <= 1e-12 * natural.span().abs().max(1.0);
+            let closes = (curve.point_at(natural.hi) - curve.point_at(natural.lo))
+                .length_squared()
+                <= vertex_tol * vertex_tol;
+            if degenerate && coincident && closes {
+                natural
+            } else {
+                span
+            }
+        }
+    }
+}
+
 fn subdivide(curve: &Curve, a: f64, b: f64, sag: f64, depth: u32, out: &mut Vec<f64>) {
     if depth == 0 {
         return;
@@ -610,6 +677,34 @@ mod tests {
             }
             .is_closed()
         );
+    }
+
+    #[test]
+    fn recover_edge_range_handles_arcs_seams_and_full_circles() {
+        use crate::eval::curve::recover_edge_range;
+        let circle = Curve::Circle {
+            frame: Frame::IDENTITY,
+            radius: 10.0,
+        };
+        let p = |t: f64| circle.point_at(t);
+
+        // A quarter arc, forward: 0.5 → 2.0.
+        let r = recover_edge_range(&circle, p(0.5), p(2.0), true, 1e-6);
+        assert!((r.lo - 0.5).abs() < 1e-9 && (r.hi - 2.0).abs() < 1e-9);
+
+        // The same points traversed the other way is the complementary arc.
+        let r = recover_edge_range(&circle, p(0.5), p(2.0), false, 1e-6);
+        assert!((r.lo - 2.0).abs() < 1e-9);
+        assert!((r.hi - (0.5 + TAU)).abs() < 1e-9, "{r:?}");
+
+        // Coincident ends at the same parameter: the whole circle.
+        let r = recover_edge_range(&circle, p(1.0), p(1.0), true, 1e-6);
+        assert!((r.span() - TAU).abs() < 1e-9);
+
+        // An arc crossing the seam.
+        let r = recover_edge_range(&circle, p(6.0), p(0.5), true, 1e-6);
+        assert!((r.lo - 6.0).abs() < 1e-9);
+        assert!((r.hi - (0.5 + TAU)).abs() < 1e-9);
     }
 
     #[test]

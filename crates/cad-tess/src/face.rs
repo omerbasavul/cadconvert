@@ -533,8 +533,26 @@ fn wrapped_region(
 
     let (lower, upper) = match rings.len() {
         2 => {
-            let upper = rings.pop().expect("checked length");
-            let lower = rings.pop().expect("checked length");
+            let mut upper = rings.pop().expect("checked length");
+            let mut lower = rings.pop().expect("checked length");
+            // On a surface periodic in v — a torus — two rings cut it into two
+            // bands, and "between the sorted v values" picks one arbitrarily.
+            // The rings themselves say which side is material: walking a
+            // boundary with the surface normal up keeps the face on the left,
+            // so a ring travelling +u has material above it in v and a ring
+            // travelling −u has material below. The +u ring is therefore the
+            // band's floor; when it sits at the higher v, the band crosses the
+            // v seam and the ceiling belongs one period up.
+            if let Some(pv) = domain.v_period {
+                if lower.wrap < 0 && upper.wrap > 0 {
+                    std::mem::swap(&mut lower, &mut upper);
+                }
+                if lower.wrap > 0 && upper.wrap < 0 && mean_v(&lower.uv) > mean_v(&upper.uv) {
+                    for p in &mut upper.uv {
+                        p.v += pv;
+                    }
+                }
+            }
             (lower, upper)
         }
         1 => {

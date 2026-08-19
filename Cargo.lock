@@ -92,6 +92,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cad-xt"
+version = "0.1.0"
+dependencies = [
+ "cad-export",
+ "cad-ir",
+ "cad-tess",
+ "rustc-hash",
+ "thiserror",
+ "xt-parser",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

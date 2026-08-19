@@ -321,6 +321,35 @@ pub struct MaterialResolver {
 }
 
 impl MaterialResolver {
+    /// Resolve one surface whose reflectivity is known per face.
+    ///
+    /// The Parasolid path attaches `SDL/TYSA_REFLECTIVITY` to the face itself,
+    /// so no colour-keyed join is needed; the STEP path, which has no such
+    /// attribute, goes through [`MaterialResolver::resolve`] and the per-colour
+    /// map instead.
+    pub fn resolve_with_reflectivity(
+        &self,
+        part: &str,
+        colour: Option<ColourEvidence>,
+        reflectivity: Option<f32>,
+    ) -> Material {
+        if let (Some(c), Some(refl)) = (colour, reflectivity)
+            && !self.no_inference
+        {
+            let hex = hex_of(c.srgb);
+            // An explicit table rule still wins over the designer flag.
+            let named = self
+                .table
+                .part_match(part)
+                .or_else(|| self.table.colour_match(&hex));
+            if let Some(name) = named {
+                return self.build_named(name, colour, Some(&hex));
+            }
+            return material_from_reflectivity(c, refl, &hex);
+        }
+        self.resolve(part, colour)
+    }
+
     /// Resolve one surface.
     pub fn resolve(&self, part: &str, colour: Option<ColourEvidence>) -> Material {
         let hex = colour.map(|c| {
@@ -348,30 +377,7 @@ impl MaterialResolver {
             && !self.no_inference
             && let Some(&refl) = self.reflectivity_by_colour.get(hex)
         {
-            let value = c.srgb[0].max(c.srgb[1]).max(c.srgb[2]);
-            let class = if refl >= 0.5 {
-                if value >= 0.70 {
-                    MaterialClass::Aluminium
-                } else if value >= 0.28 {
-                    MaterialClass::Steel
-                } else {
-                    MaterialClass::CastIron
-                }
-            } else {
-                // Matte by the designer's own hand. Near-black stays rubber;
-                // everything else is a painted surface in its exact colour.
-                if value < 0.13 {
-                    MaterialClass::Rubber
-                } else {
-                    MaterialClass::Paint
-                }
-            };
-            let mut m = tinted(class, format!("{}-{hex}", class_slug(class)), Some(c));
-            if refl < 0.5 && class == MaterialClass::Paint {
-                // The preset paint is semi-gloss; the designer said matte.
-                m.roughness = 0.55;
-            }
-            return m;
+            return material_from_reflectivity(c, refl, hex);
         }
 
         // Rung 3: infer from the colour.
@@ -415,6 +421,42 @@ impl MaterialResolver {
             }
         }
     }
+}
+
+/// Uppercase `RRGGBB` of a display-sRGB colour.
+fn hex_of(srgb: [f32; 3]) -> String {
+    format!(
+        "{:02X}{:02X}{:02X}",
+        (srgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+    )
+}
+
+/// The designer said how shiny this face is; only the family within
+/// metal-or-matte remains inferred from the colour.
+fn material_from_reflectivity(c: ColourEvidence, refl: f32, hex: &str) -> Material {
+    let value = c.srgb[0].max(c.srgb[1]).max(c.srgb[2]);
+    let class = if refl >= 0.5 {
+        if value >= 0.70 {
+            MaterialClass::Aluminium
+        } else if value >= 0.28 {
+            MaterialClass::Steel
+        } else {
+            MaterialClass::CastIron
+        }
+    } else if value < 0.13 {
+        // Matte near-black reads as rubber in a machine assembly.
+        MaterialClass::Rubber
+    } else {
+        MaterialClass::Paint
+    };
+    let mut m = tinted(class, format!("{}-{hex}", class_slug(class)), Some(c));
+    if refl < 0.5 && class == MaterialClass::Paint {
+        // The preset paint is semi-gloss; the designer said matte.
+        m.roughness = 0.55;
+    }
+    m
 }
 
 /// A class preset carrying the file's own colour.

@@ -50,6 +50,59 @@ pub fn parse_xt_file<P: AsRef<Path>>(path: P) -> Result<XtFile> {
     parse_xt(&String::from_utf8_lossy(&bytes))
 }
 
+/// A parsed file at the raw-entity level, before any typed IR is built.
+///
+/// This is the surface a lowering layer wants: every entity with its fields,
+/// plus whether the stream stopped early. `parse_xt` builds the legacy typed
+/// bodies on top of the same entities.
+pub struct RawFile {
+    pub header: XtHeader,
+    pub entities: Vec<entity::RawEntity>,
+    pub truncated: Option<entity::Truncation>,
+}
+
+/// Parse an XT file to raw entities.
+pub fn parse_raw(text: &str) -> Result<RawFile> {
+    let (header_text, body_text) = header::split_header(text)?;
+    let header = header::parse_header(header_text)?;
+
+    if body_text.starts_with("PS") || body_text.starts_with("\x50\x53") {
+        return Err(XtError::UnsupportedEncoding(
+            "binary X_B format not supported".into(),
+        ));
+    }
+    if header.user_field_size != 0 {
+        return Err(XtError::UnsupportedEncoding(format!(
+            "USFLD_SIZE={} not supported (entity parser cannot skip user fields)",
+            header.user_field_size,
+        )));
+    }
+
+    let tline = schema::parse_tline(body_text)?;
+    let mut input = tline.body.as_str();
+    let partition_count = if tline.has_base_schema {
+        schema::parse_schema_preamble(&mut input)
+            .map_err(|e| XtError::Parse {
+                offset: 0,
+                detail: format!("schema preamble: {}", e),
+            })?
+            .partition_count
+    } else {
+        0
+    };
+    let (entities, truncated) = entity::parse_entities_opt(
+        &mut input,
+        partition_count,
+        tline.has_base_schema,
+        tline.key_major,
+    )?;
+    Ok(RawFile {
+        header,
+        entities,
+        truncated,
+    })
+}
+
 /// Parse an XT file from a string.
 pub fn parse_xt(text: &str) -> Result<XtFile> {
     // Phase 0: Split header and body.

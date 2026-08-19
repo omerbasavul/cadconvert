@@ -1,0 +1,365 @@
+//! Lowers a Parasolid XT file into the format-neutral [`cad_ir`] scene.
+//!
+//! The standalone Parasolid path: `xt-parser` turns the token stream into raw
+//! entities, this crate walks their topology chains and attribute graph into
+//! the same [`Scene`] the STEP reader produces, and the shared tessellator and
+//! writers take it from there. Nothing here needs a STEP twin — and for
+//! appearance the dependency runs the other way: the XT file is the richer
+//! source, carrying per-face colour *and* the designer's metal-vs-matte
+//! reflectivity flags that STEP drops.
+
+#![forbid(unsafe_code)]
+
+pub mod geom;
+pub mod topo;
+
+use cad_ir::material_resolve::{ColourEvidence, MaterialResolver};
+use cad_ir::scene::{Geometry, MaterialId, Meta, Node, Scene, Unit};
+use rustc_hash::FxHashMap;
+use xt_parser::appearance;
+
+/// Options for lowering.
+#[derive(Debug, Clone, Default)]
+pub struct LowerOptions {
+    pub materials: MaterialResolver,
+}
+
+/// What the lowering produced besides the scene.
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    pub skipped: Vec<topo::Skip>,
+    /// Complaints per body name.
+    pub diagnostics: Vec<(String, Vec<String>)>,
+    /// Whether the entity stream stopped early, and where.
+    pub truncated: Option<String>,
+}
+
+/// Errors that prevent lowering entirely.
+#[derive(Debug, thiserror::Error)]
+pub enum XtSceneError {
+    #[error(transparent)]
+    Parse(#[from] xt_parser::XtError),
+    #[error("io error reading {path}: {source}")]
+    Io {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Lower an XT file from disk.
+pub fn scene_from_file<P: AsRef<std::path::Path>>(
+    path: P,
+    options: &LowerOptions,
+) -> Result<(Scene, Report), XtSceneError> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path).map_err(|source| XtSceneError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    // The header is not UTF-8 clean (machine-locale dates); the entity stream
+    // is pure ASCII, so lossy decoding cannot touch geometry.
+    let text = String::from_utf8_lossy(&bytes);
+    let mut scene = to_scene(&text, options)?;
+    scene.0.meta.source = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(scene)
+}
+
+/// Lower XT text into a scene.
+pub fn to_scene(text: &str, options: &LowerOptions) -> Result<(Scene, Report), XtSceneError> {
+    let file = xt_parser::parse_raw(text)?;
+    let mut report = Report {
+        truncated: file.truncated.as_ref().map(|t| t.to_string()),
+        ..Default::default()
+    };
+
+    // The attribute graph: per-face colour and reflectivity, per-body names.
+    let hints = appearance::hints_from_entities(&file.entities);
+    let face_appearance = per_face_appearance(&file.entities);
+    let body_name: FxHashMap<usize, &str> = hints
+        .body_names
+        .iter()
+        .map(|(h, n)| (*h, n.as_str()))
+        .collect();
+
+    let mut scene = Scene {
+        meta: Meta {
+            source: String::new(),
+            authoring_tool: file.header.application.clone(),
+            unit: Unit::Millimetre,
+            tolerance: topo::DEFAULT_TOLERANCE * 1e3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    // XT coordinates are metres; the shared scene convention is millimetres.
+    const M_TO_MM: f64 = 1e3;
+
+    for lowered in topo::lower_bodies(&file.entities, topo::DEFAULT_TOLERANCE) {
+        let topo::LoweredBody {
+            mut solid,
+            face_sources,
+            body_handle,
+            skipped,
+        } = lowered;
+        report.skipped.extend(skipped);
+        if solid.faces.is_empty() {
+            continue;
+        }
+
+        let name = body_name
+            .get(&body_handle)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("body-{body_handle}"));
+
+        scale_solid(&mut solid, M_TO_MM);
+        solid.name = name.clone();
+
+        let complaints = diagnose(&solid);
+        if !complaints.is_empty() {
+            report.diagnostics.push((name.clone(), complaints));
+        }
+
+        // Per-face materials straight from the face's own attributes — the
+        // reflectivity here is the designer's, attached to this very face.
+        let mut face_materials: Vec<Option<MaterialId>> = vec![None; solid.faces.len()];
+        let mut assigned = 0usize;
+        for (i, &src) in face_sources.iter().enumerate() {
+            if let Some((colour, refl)) = face_appearance.get(&src) {
+                let m = options
+                    .materials
+                    .resolve_with_reflectivity(&name, Some(*colour), *refl);
+                face_materials[i] = Some(scene.add_material(m));
+                assigned += 1;
+            }
+        }
+        let uniform = face_materials
+            .first()
+            .copied()
+            .flatten()
+            .filter(|first| face_materials.iter().all(|m| *m == Some(*first)));
+        let (material, face_materials) = match uniform {
+            Some(m) => (Some(m), Vec::new()),
+            None if assigned == 0 => (
+                Some(scene.add_material(options.materials.resolve(&name, None))),
+                Vec::new(),
+            ),
+            None => (None, face_materials),
+        };
+
+        let gid = scene.add_geometry(Geometry {
+            name: name.clone(),
+            brep: Some(solid),
+            mesh: None,
+            material,
+            face_materials,
+        });
+        let node = scene.add_node(Node {
+            name,
+            geometry: Some(gid),
+            ..Default::default()
+        });
+        scene.roots.push(node);
+    }
+
+    Ok((scene, report))
+}
+
+/// Per-face colour and reflectivity from the attribute graph.
+fn per_face_appearance(
+    entities: &[xt_parser::entity::RawEntity],
+) -> FxHashMap<usize, (ColourEvidence, Option<f32>)> {
+    let index: FxHashMap<usize, &xt_parser::entity::RawEntity> =
+        entities.iter().map(|e| (e.index, e)).collect();
+
+    let mut def_names: FxHashMap<usize, String> = FxHashMap::default();
+    for e in entities.iter().filter(|e| e.type_id == 80) {
+        let ident = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        if let Some(id_e) = index.get(&ident) {
+            def_names.insert(e.index, id_e.var_char.iter().collect());
+        }
+    }
+
+    let mut colour: FxHashMap<usize, [f32; 3]> = FxHashMap::default();
+    let mut refl: FxHashMap<usize, f32> = FxHashMap::default();
+    for e in entities.iter().filter(|e| e.type_id == 81) {
+        let def = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let owner = e.fields.get(2).map(|f| f.as_ptr()).unwrap_or(0);
+        let Some(def_name) = def_names.get(&def) else {
+            continue;
+        };
+        let mut floats: Vec<f64> = Vec::new();
+        for &v in &e.var_ptr {
+            if let Some(ve) = index.get(&v) {
+                floats.extend_from_slice(&ve.var_f64);
+            }
+        }
+        match def_name.as_str() {
+            "SDL/TYSA_COLOUR" if floats.len() >= 3 => {
+                colour.insert(owner, [floats[0] as f32, floats[1] as f32, floats[2] as f32]);
+            }
+            "SDL/TYSA_REFLECTIVITY" if !floats.is_empty() => {
+                refl.insert(owner, floats[0] as f32);
+            }
+            _ => {}
+        }
+    }
+
+    let lin = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    colour
+        .into_iter()
+        .map(|(face, srgb)| {
+            (
+                face,
+                (
+                    ColourEvidence {
+                        srgb,
+                        linear: [lin(srgb[0]), lin(srgb[1]), lin(srgb[2])],
+                        alpha: 1.0,
+                    },
+                    refl.get(&face).copied(),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Scale a solid's geometry uniformly (metres → millimetres).
+fn scale_solid(solid: &mut cad_ir::brep::Solid, f: f64) {
+    for v in &mut solid.vertices {
+        *v = *v * f;
+    }
+    for c in &mut solid.curves {
+        scale_curve(c, f);
+    }
+    for s in &mut solid.surfaces {
+        scale_surface(s, f);
+    }
+    solid.tolerance *= f;
+    for e in &mut solid.edges {
+        e.tolerance *= f;
+        // Parameter ranges of arc-length-parameterised curves do not scale;
+        // ranges recovered before scaling stay valid because both the curve
+        // and the vertices scaled together — angles are scale-free, and line
+        // parameters scale with the direction vector, which scaled too.
+    }
+}
+
+fn scale_curve(c: &mut cad_ir::brep::Curve, f: f64) {
+    use cad_ir::brep::Curve::*;
+    match c {
+        Line { origin, direction } => {
+            *origin = *origin * f;
+            *direction = *direction * f;
+        }
+        Circle { frame, radius } => {
+            frame.origin = frame.origin * f;
+            *radius *= f;
+        }
+        Ellipse {
+            frame,
+            semi_major,
+            semi_minor,
+        } => {
+            frame.origin = frame.origin * f;
+            *semi_major *= f;
+            *semi_minor *= f;
+        }
+        Parabola { frame, focal_dist } => {
+            frame.origin = frame.origin * f;
+            *focal_dist *= f;
+        }
+        Hyperbola {
+            frame,
+            semi_major,
+            semi_minor,
+        } => {
+            frame.origin = frame.origin * f;
+            *semi_major *= f;
+            *semi_minor *= f;
+        }
+        Polyline { points } => points.iter_mut().for_each(|p| *p = *p * f),
+        Nurbs(n) => n.control_points.iter_mut().for_each(|p| *p = *p * f),
+        Trimmed { base, .. } => scale_curve(base, f),
+        Composite { segments } => segments
+            .iter_mut()
+            .for_each(|s| scale_curve(&mut s.curve, f)),
+        OnSurface { .. } => {}
+    }
+}
+
+fn scale_surface(s: &mut cad_ir::brep::Surface, f: f64) {
+    use cad_ir::brep::Surface::*;
+    match s {
+        Plane { frame } => frame.origin = frame.origin * f,
+        Cylinder { frame, radius } => {
+            frame.origin = frame.origin * f;
+            *radius *= f;
+        }
+        Cone { frame, radius, .. } => {
+            frame.origin = frame.origin * f;
+            *radius *= f;
+        }
+        Sphere { frame, radius } => {
+            frame.origin = frame.origin * f;
+            *radius *= f;
+        }
+        Torus {
+            frame,
+            major_radius,
+            minor_radius,
+        } => {
+            frame.origin = frame.origin * f;
+            *major_radius *= f;
+            *minor_radius *= f;
+        }
+        Nurbs(n) => n
+            .control_points
+            .iter_mut()
+            .for_each(|row| row.iter_mut().for_each(|p| *p = *p * f)),
+        LinearExtrusion { profile, direction } => {
+            scale_curve(profile, f);
+            *direction = *direction * f;
+        }
+        Revolution { profile, frame } => {
+            scale_curve(profile, f);
+            frame.origin = frame.origin * f;
+        }
+        Offset { base, distance } => {
+            scale_surface(base, f);
+            *distance *= f;
+        }
+        RectangularTrimmed { base, .. } => scale_surface(base, f),
+    }
+}
+
+/// The same cheap structural checks the STEP path runs.
+fn diagnose(solid: &cad_ir::brep::Solid) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut uses = vec![0usize; solid.edges.len()];
+    for f in &solid.faces {
+        for b in &f.bounds {
+            for h in &b.halves {
+                if let Some(u) = uses.get_mut(h.edge.index()) {
+                    *u += 1;
+                }
+            }
+        }
+    }
+    let dangling = uses.iter().filter(|&&u| u == 1).count();
+    if solid.body_type == cad_ir::brep::BodyType::Solid && dangling > 0 {
+        out.push(format!("{dangling} edges used by only one face"));
+    }
+    out
+}
