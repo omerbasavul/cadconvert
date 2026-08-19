@@ -20,6 +20,7 @@
 pub mod brep;
 pub mod eval;
 pub mod material;
+pub mod material_resolve;
 pub mod math;
 pub mod mesh;
 pub mod scene;
@@ -29,6 +30,7 @@ pub use brep::{
     NurbsSurface, Shell, Solid, Surface, SurfaceId, CurveId, VertexId,
 };
 pub use material::{Material, MaterialClass, MaterialSource};
+pub use material_resolve::{ColourEvidence, MaterialResolver, MaterialTable};
 pub use math::{Aabb, Frame, Interval, Transform, Vec2, Vec3};
 pub use mesh::{Mesh, MeshPart};
 pub use scene::{Geometry, GeometryId, Instance, MaterialId, Meta, Node, NodeId, Scene, Unit};

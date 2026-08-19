@@ -26,7 +26,7 @@ use crate::lower::geom;
 use crate::lower::topo::{self, SolidBuilder};
 use crate::{presentation, units, StepFile};
 use cad_ir::brep::FaceId;
-use cad_ir::material::Material;
+use cad_ir::material_resolve::{ColourEvidence, MaterialResolver};
 use cad_ir::math::Transform;
 use cad_ir::scene::{Geometry, GeometryId, MaterialId, Meta, Node, NodeId, Scene, Unit};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -44,8 +44,23 @@ pub struct Report {
     pub empty_products: Vec<String>,
 }
 
-/// Lower a whole STEP file into a scene.
+/// Options for lowering.
+#[derive(Debug, Clone, Default)]
+pub struct LowerOptions {
+    /// How a part-plus-colour becomes a material. The default infers a
+    /// material family from the colour (grey → metal, saturated → paint);
+    /// a user table can override any part or colour, and `no_inference`
+    /// restores plain untyped colours.
+    pub materials: MaterialResolver,
+}
+
+/// Lower a whole STEP file into a scene with default options.
 pub fn to_scene(file: &StepFile) -> Result<(Scene, Report)> {
+    to_scene_with(file, &LowerOptions::default())
+}
+
+/// Lower a whole STEP file into a scene.
+pub fn to_scene_with(file: &StepFile, options: &LowerOptions) -> Result<(Scene, Report)> {
     let units = units::resolve(file)?;
     let styles = presentation::resolve(file)?;
     let mut report = Report {
@@ -69,7 +84,8 @@ pub fn to_scene(file: &StepFile) -> Result<(Scene, Report)> {
     let mut node_of_pd: FxHashMap<u32, NodeId> = FxHashMap::default();
     for &pd in &index.product_definitions {
         let name = index.product_name(file, pd)?;
-        let geometry = build_geometry(file, &index, &styles, &units, pd, &name, &mut scene, &mut report)?;
+        let geometry =
+            build_geometry(file, &index, &styles, &units, options, pd, &name, &mut scene, &mut report)?;
         if geometry.is_none() && !index.has_children(pd) {
             report.empty_products.push(name.clone());
         }
@@ -137,6 +153,7 @@ fn build_geometry(
     index: &Index,
     styles: &presentation::Styles,
     units: &units::Units,
+    options: &LowerOptions,
     pd: u32,
     name: &str,
     scene: &mut Scene,
@@ -191,7 +208,14 @@ fn build_geometry(
         chain.extend(solid_ids.iter().copied());
         chain.extend(index.shape_representations(pd));
         if let Some(app) = styles.lookup(chain) {
-            let m = material_for(app, name);
+            let m = options.materials.resolve(
+                name,
+                Some(ColourEvidence {
+                    srgb: app.rgb,
+                    linear: app.linear_rgb(),
+                    alpha: app.alpha,
+                }),
+            );
             let id = scene.add_material(m);
             if let Some(slot) = face_materials.get_mut(fid.index()) {
                 *slot = Some(id);
@@ -209,7 +233,10 @@ fn build_geometry(
         .filter(|first| face_materials.iter().all(|m| *m == Some(*first)));
     let (material, face_materials) = match uniform {
         Some(m) => (Some(m), Vec::new()),
-        None if assigned == 0 => (Some(scene.add_material(Material::unknown())), Vec::new()),
+        None if assigned == 0 => (
+            Some(scene.add_material(options.materials.resolve(name, None))),
+            Vec::new(),
+        ),
         None => (None, face_materials),
     };
 
@@ -221,17 +248,6 @@ fn build_geometry(
         face_materials,
     });
     Ok(Some(gid))
-}
-
-/// Turn a resolved appearance into a material.
-///
-/// STEP carries no engineering material, so this is the colour-only rung of the
-/// fallback ladder; a name from a sidecar or a native file is applied later,
-/// over the top of this.
-fn material_for(app: presentation::Appearance, part: &str) -> Material {
-    let mut m = Material::from_colour(format!("{part}-{}", app.srgb_hex()), app.linear_rgb(), app.alpha);
-    m.name = format!("colour-{}", app.srgb_hex());
-    m
 }
 
 /// Scale every geometry and placement from file units into millimetres.

@@ -23,8 +23,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = StepFile::open(&path)?;
     let read_ms = t0.elapsed().as_secs_f64() * 1e3;
 
+    // Material resolution: a table via CAD_MATERIALS=path, inference off via
+    // CAD_NO_INFER=1.
+    let mut opts = lower::asm::LowerOptions::default();
+    if let Ok(path) = std::env::var("CAD_MATERIALS") {
+        let text = std::fs::read_to_string(&path)?;
+        let (table, errors) = cad_ir::MaterialTable::parse(&text);
+        for e in &errors {
+            eprintln!("[materials] {path}: {e}");
+        }
+        opts.materials.table = table;
+    }
+    opts.materials.no_inference = std::env::var_os("CAD_NO_INFER").is_some();
+
     let t1 = Instant::now();
-    let (mut scene, _) = lower::asm::to_scene(&file)?;
+    let (mut scene, _) = lower::asm::to_scene_with(&file, &opts)?;
     let lower_ms = t1.elapsed().as_secs_f64() * 1e3;
 
     let scale = scene.vertex_bounds().diagonal();
@@ -162,6 +175,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- furthest placements (mm from origin) --");
     for (name, dist, size) in placed.iter().take(5) {
         println!("  {name:<24} centre {dist:>9.1}   size {size:>8.1}");
+    }
+
+    println!("\n-- materials --");
+    for (i, m) in scene.materials.iter().enumerate() {
+        println!(
+            "  [{i:>2}] {:<22} linear({:.3},{:.3},{:.3})  metal {:.1}  rough {:.2}  alpha {:.2}",
+            m.name,
+            m.base_color[0],
+            m.base_color[1],
+            m.base_color[2],
+            m.metallic,
+            m.roughness,
+            m.alpha
+        );
     }
 
     let b = scene.bounds();
