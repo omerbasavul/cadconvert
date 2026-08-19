@@ -345,6 +345,7 @@ fn read_surface_base(file: &StepFile, a: &mut Args<'_>) -> Result<SurfaceBase> {
     a.skip()?; // surface_form
     let u_closed = a.next_bool()?.unwrap_or(false);
     let v_closed = a.next_bool()?.unwrap_or(false);
+    a.skip()?; // self_intersect
     Ok(SurfaceBase {
         u_degree,
         v_degree,
@@ -618,6 +619,7 @@ fn read_curve_base(file: &StepFile, a: &mut Args<'_>) -> Result<(usize, Vec<Vec3
     }
     a.skip()?; // curve_form
     let closed = a.next_bool()?.unwrap_or(false);
+    a.skip()?; // self_intersect
     Ok((degree, cps, closed))
 }
 
@@ -720,6 +722,8 @@ fn curve2(file: &StepFile, id: u32) -> Result<Curve2> {
                         for r in refs {
                             cps.push(point2(file, r)?);
                         }
+                        // curve_form, closed_curve, self_intersect follow, but
+                        // nothing downstream reads them for a pcurve.
                     }
                     Kind::BSplineCurveWithKnots => {
                         a.next_i64_list(&mut mult)?;

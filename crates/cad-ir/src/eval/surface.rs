@@ -9,7 +9,7 @@
 //! torus's degenerate ring — and a zero-length normal there turns into either a
 //! black triangle or a NaN. The analytic form is defined at those points.
 
-use crate::brep::{Curve, NurbsSurface, Surface};
+use crate::brep::{NurbsSurface, Surface};
 use crate::eval::nurbs;
 use crate::math::{Frame, Interval, TAU, Vec2, Vec3};
 
@@ -527,6 +527,7 @@ fn wrap_tau(a: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brep::Curve;
 
     fn close(a: Vec3, b: Vec3, eps: f64) -> bool {
         (a - b).length() < eps

@@ -31,4 +31,3 @@ panic = "abort"
 
 [profile.bench]
 inherits = "release"
-panic = "unwind"

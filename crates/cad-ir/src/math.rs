@@ -339,6 +339,46 @@ impl Transform {
         Transform { m }
     }
 
+    /// The inverse, or `None` when the linear part is singular.
+    ///
+    /// Assembly placement is expressed as a pair of frames — the part's own and
+    /// where it sits in the parent — and recovering the transform between them
+    /// means inverting one of them. Doing it generally rather than assuming
+    /// rigidity means a mirrored or scaled instance inverts correctly too.
+    pub fn try_inverse(&self) -> Option<Transform> {
+        let m = &self.m;
+        let det = self.determinant();
+        if !det.is_finite() || det.abs() < 1e-300 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        // Adjugate of the 3x3 linear part, transposed in place.
+        let a = [
+            [
+                (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det,
+                (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det,
+                (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det,
+            ],
+            [
+                (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det,
+                (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det,
+                (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_det,
+            ],
+            [
+                (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_det,
+                (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_det,
+                (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_det,
+            ],
+        ];
+        let t = [m[0][3], m[1][3], m[2][3]];
+        let mut out = [[0.0f64; 4]; 3];
+        for r in 0..3 {
+            out[r][..3].copy_from_slice(&a[r]);
+            out[r][3] = -(a[r][0] * t[0] + a[r][1] * t[1] + a[r][2] * t[2]);
+        }
+        Some(Transform { m: out })
+    }
+
     /// Determinant of the linear part.
     ///
     /// A negative value means the transform mirrors, which flips every
@@ -543,6 +583,34 @@ mod tests {
         assert!(mirror.is_mirroring());
         assert!(!Transform::IDENTITY.is_mirroring());
         assert!(!Transform::from_scale(2.0).is_mirroring());
+    }
+
+    #[test]
+    fn inverse_undoes_a_rigid_placement() {
+        let f = Frame::new(Vec3::new(3.0, -1.0, 2.0), Vec3::Y, Vec3::Z);
+        let t = Transform::from_frame(&f);
+        let inv = t.try_inverse().unwrap();
+        for p in [Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0), Vec3::new(-5.0, 0.5, 9.0)] {
+            assert!(close(inv.point(t.point(p)), p), "round trip failed for {p:?}");
+        }
+    }
+
+    #[test]
+    fn inverse_undoes_a_scaled_and_mirrored_transform() {
+        let mut t = Transform::from_scale(4.0);
+        t.m[1][1] = -4.0;
+        t.m[0][3] = 7.0;
+        let inv = t.try_inverse().unwrap();
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        assert!(close(inv.point(t.point(p)), p));
+        assert!(t.is_mirroring());
+    }
+
+    #[test]
+    fn a_singular_transform_has_no_inverse() {
+        let mut t = Transform::IDENTITY;
+        t.m[2][2] = 0.0;
+        assert!(t.try_inverse().is_none());
     }
 
     #[test]
