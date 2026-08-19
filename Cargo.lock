@@ -84,6 +84,7 @@ name = "cad-tess"
 version = "0.1.0"
 dependencies = [
  "cad-ir",
+ "cad-step",
  "rayon",
  "rustc-hash",
  "spade",

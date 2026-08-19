@@ -93,17 +93,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (Some(m), Some(s)) = (&g.mesh, &g.brep) else {
                 return None;
             };
-            let rough = s.rough_bounds().diagonal();
+            let rough = s.geometric_bounds().diagonal();
             let mesh = m.bounds().diagonal();
             (rough > 0.0 && mesh > rough * 1.5).then(|| (g.name.clone(), rough, mesh))
         })
         .collect();
     suspect.sort_by(|a, b| (b.2 / b.1).partial_cmp(&(a.2 / a.1)).unwrap());
     if !suspect.is_empty() {
-        println!("\n-- meshes larger than their own vertices --");
+        println!("\n-- meshes larger than their own geometry --");
         for (name, rough, mesh) in suspect.iter().take(8) {
             println!(
-                "  {name:<24} brep {rough:>10.1} mm   mesh {mesh:>12.1} mm   x{:.0}",
+                "  {name:<24} brep {rough:>10.1} mm   mesh {mesh:>12.1} mm   x{:.1}",
                 mesh / rough
             );
         }

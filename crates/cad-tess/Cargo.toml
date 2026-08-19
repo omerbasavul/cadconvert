@@ -10,3 +10,6 @@ cad-ir.workspace = true
 rayon.workspace = true
 rustc-hash.workspace = true
 spade = "2"
+
+[dev-dependencies]
+cad-step.workspace = true

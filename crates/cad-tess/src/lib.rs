@@ -114,6 +114,34 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
     report
 }
 
+/// How far the patch's farthest point sits from the body's centre.
+fn farthest(patch: &face::Patch, reference: &cad_ir::math::Aabb) -> f64 {
+    if reference.is_empty() {
+        return 0.0;
+    }
+    let centre = reference.centre();
+    patch
+        .positions
+        .iter()
+        .map(|p| {
+            (cad_ir::math::Vec3::new(p[0] as f64, p[1] as f64, p[2] as f64) - centre).length()
+        })
+        .fold(0.0f64, f64::max)
+}
+
+/// True when a patch reaches outside the body it was built from.
+///
+/// A face can bulge past its own boundary — a spherical cap reaches a radius
+/// above the circle bounding it — but never past the body. The allowance is a
+/// full body diagonal beyond the centre, which no correct patch approaches and
+/// every mis-recovered one exceeds.
+fn escapes_body(patch: &face::Patch, reference: &cad_ir::math::Aabb) -> bool {
+    if reference.is_empty() {
+        return false;
+    }
+    farthest(patch, reference) > reference.diagonal()
+}
+
 /// Tessellate one solid into a single mesh with per-material index runs.
 pub fn tessellate_solid(
     name: &str,
@@ -152,7 +180,7 @@ pub fn tessellate_solid(
 
     for (_shell, fid, result) in faces {
         match result {
-            Ok(patch) if !patch.indices.is_empty() => {
+            Ok(patch) if !patch.indices.is_empty() && !escapes_body(&patch, &reference) => {
                 if trace_strays {
                     let centre = reference.centre();
                     let limit = reference.diagonal().max(1.0) * 2.0;
@@ -213,10 +241,24 @@ pub fn tessellate_solid(
                 });
                 report.faces_ok += 1;
             }
-            Ok(_) => report.failed.push(FaceFailure {
+            Ok(patch) if patch.indices.is_empty() => report.failed.push(FaceFailure {
                 geometry: name.to_string(),
                 face: fid,
                 reason: "triangulation produced no triangles".into(),
+            }),
+            // The patch left the body it belongs to. Its boundary passed the
+            // per-face check, so the boundary itself is where the error is —
+            // an edge range recovered as the wrong arc, or a parameter that
+            // jumped near a degenerate point. Dropping the face leaves a hole
+            // that is reported; keeping it puts a spike through the model.
+            Ok(patch) => report.failed.push(FaceFailure {
+                geometry: name.to_string(),
+                face: fid,
+                reason: format!(
+                    "patch reaches {:.1} mm from the body centre, but the body spans {:.1} mm",
+                    farthest(&patch, &reference),
+                    reference.diagonal()
+                ),
             }),
             Err(e) => report.failed.push(FaceFailure {
                 geometry: name.to_string(),

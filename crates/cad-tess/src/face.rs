@@ -67,28 +67,76 @@ pub fn tessellate(
     let scale = parameter_scale(surface, &domain);
 
     let mut loops = Vec::new();
+    // A single-vertex bound is the file stating that this face runs to a point
+    // — a cone's apex, a sphere's pole. It carries no edges, so it contributes
+    // no boundary, but its existence is the only trustworthy licence to close a
+    // face onto a pole at all.
+    let mut apexes: Vec<Vec3> = Vec::new();
     for bound in &face.bounds {
-        if let Some(l) = build_loop(bound, surface, &domain, edges)? {
+        if let Some(v) = bound.vertex
+            && bound.halves.is_empty()
+        {
+            apexes.push(solid.vertex(v));
+            continue;
+        }
+        if let Some(l) = build_loop(bound, surface, &domain, edges, solid.tolerance)? {
             loops.push(l);
         }
     }
 
-    // A loop that wraps *and* encloses area is already a closed polygon in the
-    // unrolled strip: its implicit closing edge runs along the seam, which is
-    // precisely the boundary the file left implicit. Only a wrapping loop that
-    // encloses nothing is a bare ring — a circle at constant v — and those are
-    // the ones that need a partner ring or a pole to close against.
-    let ring_area = loops
-        .iter()
-        .map(|l| l.area.abs())
-        .fold(0.0f64, f64::max)
-        * 1e-6;
+    // Wrapping loops come in two kinds and they need opposite treatment.
+    //
+    // A *bare ring* is a circle at constant v: it travels a whole period and
+    // encloses nothing, so on its own it bounds no region and has to be paired
+    // with something — another ring, a wavy boundary, or a declared apex.
+    //
+    // A *band boundary* also travels a whole period but encloses real area,
+    // because the file put a seam edge in the loop. Its implicit closing edge
+    // already runs along that seam, so it is a complete polygon in the unrolled
+    // strip and needs nothing added.
+    //
+    // Telling them apart by area alone fails: a wavy boundary and a ring can
+    // both sit next to a much larger loop. Comparing each loop's area against
+    // the band its own parameter extent would sweep is local and decides both.
     let wrapping: Vec<usize> = loops
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.wrap != 0 && l.area.abs() <= ring_area.max(1e-12))
+        .filter(|(_, l)| l.wrap != 0)
         .map(|(i, _)| i)
         .collect();
+    let is_bare_ring = |l: &UvLoop| {
+        let (u_lo, u_hi) = span(l.uv.iter().map(|p| p.u));
+        let (v_lo, v_hi) = span(l.uv.iter().map(|p| p.v));
+        l.area.abs() <= (u_hi - u_lo) * (v_hi - v_lo) * 0.05 + 1e-12
+    };
+    // One wrapping loop that is not a bare ring closes itself; sending it to
+    // the seam-building path would have it look for a partner it does not need.
+    let wrapping: Vec<usize> = if wrapping.len() == 1 && !is_bare_ring(&loops[wrapping[0]]) {
+        Vec::new()
+    } else {
+        wrapping
+    };
+
+    if std::env::var_os("CAD_TESS_TRACE_VWRAP").is_some()
+        && let Some(pv) = domain.v_period
+    {
+        for l in &loops {
+            let travel = l.uv[l.uv.len() - 1].v - l.uv[0].v;
+            let periods = travel / pv;
+            if (periods.abs() - 1.0).abs() < 0.15 {
+                eprintln!(
+                    "[vwrap] face {} {} bounds={} loop n={} v-travel={:.3} periods u-span={:.3} area={:.3e}",
+                    fid.0,
+                    surface_kind(surface),
+                    face.bounds.len(),
+                    l.uv.len(),
+                    periods,
+                    span(l.uv.iter().map(|p| p.u)).1 - span(l.uv.iter().map(|p| p.u)).0,
+                    l.area
+                );
+            }
+        }
+    }
 
     if std::env::var_os("CAD_TESS_TRACE").is_some() {
         eprintln!(
@@ -188,7 +236,7 @@ pub fn tessellate(
     } else if wrapping.is_empty() {
         closed_region(&mut loops)?
     } else {
-        wrapped_region(&mut loops, &wrapping, surface, &domain, options)?
+        wrapped_region(&mut loops, &wrapping, &apexes, surface, &domain, options)?
     };
 
     if outer.uv.len() < 3 {
@@ -239,6 +287,7 @@ fn build_loop(
     surface: &Surface,
     domain: &Domain,
     edges: &[Chain],
+    tolerance: f64,
 ) -> Result<Option<UvLoop>, String> {
     // A single-vertex loop marks a degenerate point — a cone apex, a sphere
     // pole. It bounds no area and contributes no constraint.
@@ -268,7 +317,7 @@ fn build_loop(
     // in parameter space — and there it is a genuine, distinct boundary vertex.
     // Dropping it before unwrapping is what turns a full cylindrical band into
     // an open path with its last edge missing.
-    let mut uv = unwrap_chain(surface, domain, &xyz);
+    let mut uv = unwrap_chain(surface, domain, &xyz, tolerance);
     let closes_in_3d = (xyz[xyz.len() - 1] - xyz[0]).length_squared() < 1e-24;
 
     let wrap = net_wrap(&uv, domain);
@@ -296,23 +345,74 @@ fn build_loop(
 /// Each point is placed in the branch nearest its predecessor, so a loop that
 /// crosses the seam produces `… 6.1, 6.2, 6.4 …` rather than `… 6.1, 6.2,
 /// 0.1 …`. Without this every periodic face is torn in half.
-fn unwrap_chain(surface: &Surface, domain: &Domain, xyz: &[Vec3]) -> Vec<Vec2> {
+fn unwrap_chain(surface: &Surface, domain: &Domain, xyz: &[Vec3], tolerance: f64) -> Vec<Vec2> {
     let mut out = Vec::with_capacity(xyz.len());
-    let mut previous: Option<Vec2> = None;
+    let mut previous: Option<(Vec2, Vec3)> = None;
     for &p in xyz {
-        let mut uv = surface.invert(p, previous).unwrap_or_default();
-        if let Some(prev) = previous {
+        let hint = previous.map(|(uv, _)| uv);
+        let mut uv = match surface.invert(p, hint) {
+            Some(uv) => uv,
+            // Inversion failed outright. Falling back to the origin of
+            // parameter space would place this boundary point somewhere
+            // unrelated; staying where the previous point was is at least
+            // local, and the position itself is cached and still exact.
+            None => match hint {
+                Some(prev) => prev,
+                None => Vec2::default(),
+            },
+        };
+        if let Some((prev_uv, prev_p)) = previous {
             if let Some(period) = domain.u_period {
-                uv.u = nearest_branch(uv.u, prev.u, period);
+                uv.u = nearest_branch(uv.u, prev_uv.u, period);
             }
             if let Some(period) = domain.v_period {
-                uv.v = nearest_branch(uv.v, prev.v, period);
+                uv.v = nearest_branch(uv.v, prev_uv.v, period);
             }
+            uv = limit_step(surface, prev_uv, uv, prev_p, p, tolerance);
         }
-        previous = Some(uv);
+        previous = Some((uv, p));
         out.push(uv);
     }
     out
+}
+
+/// Reject a parameter step that the points' own separation cannot justify.
+///
+/// Near a degenerate point — a cone's apex, a sphere's pole, the axis of any
+/// surface of revolution — the angular parameter is ill-conditioned: two points
+/// a hundredth of a millimetre apart can invert to angles half a turn apart.
+/// One such jump inside a small face makes its parameter-space polygon span a
+/// whole period, which then reads as a wrapping loop and gets closed across the
+/// entire surface.
+///
+/// The surface's own derivative says how far one unit of parameter moves a
+/// point, so the step implied by the parameters can be compared against the
+/// distance actually travelled. A coincident pair is exempt: that is the
+/// closing point of a periodic loop, where a full period of travel over zero
+/// distance is exactly right.
+fn limit_step(
+    surface: &Surface,
+    prev_uv: Vec2,
+    uv: Vec2,
+    prev_p: Vec3,
+    p: Vec3,
+    tolerance: f64,
+) -> Vec2 {
+    let moved = (p - prev_p).length();
+    if moved <= tolerance * 10.0 {
+        return uv;
+    }
+    let (du, dv) = surface.derivatives_at(prev_uv);
+    let implied_u = du.length() * (uv.u - prev_uv.u).abs();
+    let implied_v = dv.length() * (uv.v - prev_uv.v).abs();
+    // A chord is at most a few percent shorter than the arc it subtends for any
+    // step worth taking, so four times the distance is a wide margin around
+    // anything legitimate.
+    let budget = moved * 4.0 + tolerance;
+    Vec2::new(
+        if implied_u > budget { prev_uv.u } else { uv.u },
+        if implied_v > budget { prev_uv.v } else { uv.v },
+    )
 }
 
 /// Shift `value` by whole periods to sit as close to `reference` as possible.
@@ -386,6 +486,7 @@ fn closed_region(loops: &mut Vec<UvLoop>) -> Result<(UvLoop, Vec<UvLoop>), Strin
 fn wrapped_region(
     loops: &mut Vec<UvLoop>,
     wrapping: &[usize],
+    apexes: &[Vec3],
     surface: &Surface,
     domain: &Domain,
     options: &Resolved,
@@ -437,36 +538,25 @@ fn wrapped_region(
             (lower, upper)
         }
         1 => {
-            // One ring means the face runs from it to a pole, which only a
-            // v-bounded surface can do. Synthesise the missing ring on the
-            // domain edge the face's winding points toward.
+            // One ring, so the face runs from it to a point. Close it only
+            // where the file says so: a single-vertex bound is that statement.
+            // In the pilot assembly just 18 of 1423 conical and spherical faces
+            // carry one while 114 reach this branch, and inferring the rest
+            // from geometry alone fabricated a fan of long thin triangles
+            // reaching to an apex the part does not have.
             let ring = rings.pop().expect("checked length");
-            let v_mid = mean_v(&ring.uv);
-            let toward_high = (domain.v.hi - v_mid).abs() < (v_mid - domain.v.lo).abs();
-            let v_edge = if toward_high { domain.v.hi } else { domain.v.lo };
-            if !v_edge.is_finite() || v_edge.abs() > 1e11 {
+            let Some(apex) = nearest_apex(apexes, &ring) else {
                 return Err(format!(
-                    "one wrapping loop at v={v_mid:.4}, but the nearer domain edge is \
-                     v={v_edge:.3e} — the surface does not close on that side"
+                    "one wrapping loop and no vertex loop to close it onto \
+                     ({} degenerate bounds declared)",
+                    apexes.len()
                 ));
-            }
-            // Closing onto a domain edge only makes sense when it is near the
-            // face. A shallow cone's apex can be kilometres away, and running
-            // the face out to it would swallow the whole model's bounds.
-            let reach = (v_edge - v_mid).abs();
-            let girth = ring
-                .xyz
-                .iter()
-                .map(|p| (*p - ring.xyz[0]).length())
-                .fold(0.0f64, f64::max);
-            if girth > 0.0 && reach > girth * 8.0 {
-                return Err(format!(
-                    "one wrapping loop, and the domain edge it would close onto is \
-                     {reach:.1} away from a loop only {girth:.1} across"
-                ));
-            }
-            let edge_ring = pole_ring(surface, &ring, v_edge);
-            if toward_high {
+            };
+            let Some(apex_uv) = surface.invert(apex, ring.uv.first().copied()) else {
+                return Err("the declared apex does not invert onto the surface".into());
+            };
+            let edge_ring = pole_ring(&ring, apex, apex_uv.v);
+            if apex_uv.v > mean_v(&ring.uv) {
                 (ring, edge_ring)
             } else {
                 (edge_ring, ring)
@@ -542,10 +632,39 @@ fn mean_v(uv: &[Vec2]) -> f64 {
     uv.iter().map(|p| p.v).sum::<f64>() / uv.len() as f64
 }
 
-/// A synthetic ring along a `v` domain edge, matching another ring's u samples.
-fn pole_ring(surface: &Surface, like: &UvLoop, v: f64) -> UvLoop {
+/// The declared apex nearest a ring, if one is close enough to be its pole.
+///
+/// A part may declare several degenerate points; the one belonging to this ring
+/// is the one within reach of it. A cone's apex sits within a few radii of its
+/// base, so anything further away belongs to a different feature.
+fn nearest_apex(apexes: &[Vec3], ring: &UvLoop) -> Option<Vec3> {
+    if ring.xyz.is_empty() {
+        return None;
+    }
+    let centre = ring.xyz.iter().fold(Vec3::ZERO, |a, p| a + *p) * (1.0 / ring.xyz.len() as f64);
+    let radius = ring
+        .xyz
+        .iter()
+        .map(|p| (*p - centre).length())
+        .fold(0.0f64, f64::max);
+    apexes
+        .iter()
+        .copied()
+        .map(|a| ((a - centre).length(), a))
+        .filter(|(d, _)| *d <= radius * 16.0 + 1e-6)
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, a)| a)
+}
+
+/// The pole as a parameter-space line at constant `v`, every point of which is
+/// the same 3D apex.
+///
+/// The position comes from the file's own vertex rather than from evaluating
+/// the surface at a guessed parameter, so the fan converges exactly where the
+/// model says it does.
+fn pole_ring(like: &UvLoop, apex: Vec3, v: f64) -> UvLoop {
     let uv: Vec<Vec2> = like.uv.iter().map(|p| Vec2::new(p.u, v)).collect();
-    let xyz: Vec<Vec3> = uv.iter().map(|&p| surface.point_at(p)).collect();
+    let xyz: Vec<Vec3> = vec![apex; uv.len()];
     UvLoop {
         area: signed_area(&uv),
         wrap: like.wrap,
