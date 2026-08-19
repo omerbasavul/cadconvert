@@ -270,6 +270,33 @@ impl<'a> Args<'a> {
         })
     }
 
+    /// Read a measure: either a bare number or a typed one like
+    /// `LENGTH_MEASURE(25.4)`.
+    ///
+    /// STEP declares measures through SELECT types, so whether the wrapper is
+    /// written is up to the exporter and both spellings appear in real files —
+    /// often in the same file, for the same attribute.
+    pub fn next_measure_f64(&mut self) -> Result<f64> {
+        let span = self.param_span()?;
+        if let Some(v) = parse_f64(self.buf, &span) {
+            return Ok(v);
+        }
+        // `KEYWORD( value )` — take the single wrapped value.
+        if let Some(off) = memchr::memchr(b'(', &self.buf[span.clone()]) {
+            let open = span.start + off;
+            if self.buf[span.end - 1] == b')' {
+                let inner = trim_span(self.buf, open + 1..span.end - 1);
+                if let Some(v) = parse_f64(self.buf, &inner) {
+                    return Ok(v);
+                }
+            }
+        }
+        Err(StepError::value(
+            span.start,
+            format!("expected a measure, found `{}`", show(self.buf, &span)),
+        ))
+    }
+
     /// Read an integer literal.
     pub fn next_i64(&mut self) -> Result<i64> {
         let span = self.param_span()?;
@@ -914,6 +941,14 @@ mod tests {
         assert_eq!(a.next_f64().unwrap(), 0.002);
         assert_eq!(a.next_f64().unwrap(), 0.5);
         assert_eq!(a.next_f64().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn measures_read_wrapped_or_bare() {
+        let mut a = args("LENGTH_MEASURE(25.4),1.5,COUNT_MEASURE( 3. )");
+        assert_eq!(a.next_measure_f64().unwrap(), 25.4);
+        assert_eq!(a.next_measure_f64().unwrap(), 1.5);
+        assert_eq!(a.next_measure_f64().unwrap(), 3.0);
     }
 
     #[test]

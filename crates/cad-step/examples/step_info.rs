@@ -3,7 +3,7 @@
 //!
 //! `cargo run --release -p cad-step --example step_info -- file.stp`
 
-use cad_step::{Kind, StepFile};
+use cad_step::{Kind, StepFile, presentation, units};
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,20 +49,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let t1 = Instant::now();
+    let u = units::resolve(&file)?;
+    let styles = presentation::resolve(&file)?;
+    let resolve_ms = t1.elapsed().as_secs_f64() * 1e3;
+
+    println!("\n-- units --");
+    println!(
+        "  length      x{} -> mm{}",
+        u.length_to_mm,
+        if u.resolved { "" } else { "  (ASSUMED - no unit found)" }
+    );
+    println!("  angle       x{} -> rad", u.angle_to_rad);
+    println!("  tolerance   {} file units", u.uncertainty);
+
+    println!("\n-- resolved styles --   ({resolve_ms:.1} ms)");
+    println!("  {} items carry an appearance", styles.len());
+    if !styles.unresolved.is_empty() {
+        println!("  {} styled items yielded no colour", styles.unresolved.len());
+    }
+    let mut by_target: std::collections::BTreeMap<&str, usize> = Default::default();
+    for e in file.by_kind(Kind::StyledItem) {
+        let mut a = file.args_of(e);
+        a.skip()?;
+        a.skip()?;
+        if let Ok(item) = a.next_ref() {
+            let k = file.kind_of(item);
+            let name = if k == Kind::Other {
+                file.get(item).map(|x| file.keyword(x)).unwrap_or("(dangling)")
+            } else {
+                k.as_str()
+            };
+            *by_target.entry(name).or_default() += 1;
+        }
+    }
+    println!("  styled item targets:");
+    for (k, n) in &by_target {
+        println!("    {n:>7}  {k}");
+    }
+    println!("  palette:");
+    for (app, n) in styles.palette() {
+        println!(
+            "    {n:>7} items  sRGB #{}  linear({:.4},{:.4},{:.4})  alpha {:.2}",
+            app.srgb_hex(),
+            app.linear_rgb()[0],
+            app.linear_rgb()[1],
+            app.linear_rgb()[2],
+            app.alpha
+        );
+    }
+
     println!("\n-- colours --");
     for e in file.by_kind(Kind::ColourRgb) {
         let mut a = file.args_of(e);
         let name = a.next_str()?;
         let (r, g, b) = (a.next_f64()?, a.next_f64()?, a.next_f64()?);
         println!(
-            "  #{:<8} rgb({:.3}, {:.3}, {:.3})  sRGB #{:02X}{:02X}{:02X}  {name}",
+            "  #{:<8} file({r:.4}, {g:.4}, {b:.4})  sRGB #{}  {name}",
             e.id,
-            r,
-            g,
-            b,
-            (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            cad_step::Appearance {
+                rgb: [r as f32, g as f32, b as f32],
+                alpha: 1.0
+            }
+            .srgb_hex(),
         );
     }
 

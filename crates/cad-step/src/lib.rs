@@ -28,11 +28,15 @@
 
 pub mod error;
 pub mod kind;
+pub mod presentation;
 pub mod scan;
+pub mod units;
 pub mod value;
 
 pub use error::{Result, StepError};
 pub use kind::Kind;
+pub use presentation::{Appearance, Styles};
+pub use units::Units;
 pub use value::{Args, Value};
 
 use std::ops::Range;

@@ -177,6 +177,7 @@ kinds! {
     SurfaceSideStyle          => b"SURFACE_SIDE_STYLE",
     SurfaceStyleFillArea      => b"SURFACE_STYLE_FILL_AREA",
     SurfaceStyleRendering     => b"SURFACE_STYLE_RENDERING",
+    SurfaceStyleRenderingWithProperties => b"SURFACE_STYLE_RENDERING_WITH_PROPERTIES",
     SurfaceStyleTransparent   => b"SURFACE_STYLE_TRANSPARENT",
     FillAreaStyle             => b"FILL_AREA_STYLE",
     FillAreaStyleColour       => b"FILL_AREA_STYLE_COLOUR",
