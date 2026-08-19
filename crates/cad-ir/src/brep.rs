@@ -336,6 +336,24 @@ impl Solid {
         self.vertices[id.index()]
     }
 
+    /// A bound from the solid's topological vertices alone.
+    ///
+    /// This is the honest scale of a body. [`Solid::rough_bounds`] also takes in
+    /// spline control points, and a rational curve representing a near-degenerate
+    /// conic legitimately places a control point thousands of times further out
+    /// than the curve ever goes — pinned back by a weight near zero. Sizing a
+    /// relative tolerance off that would coarsen the whole model.
+    ///
+    /// Empty for a body whose faces are all periodic, such as a plain shaft,
+    /// which genuinely has no vertices; callers must fall back.
+    pub fn vertex_bounds(&self) -> Aabb {
+        let mut b = Aabb::EMPTY;
+        for v in &self.vertices {
+            b.add_point(*v);
+        }
+        b
+    }
+
     /// A bound on the solid, from its vertices and any explicit control points.
     ///
     /// Cheap and conservative: it does not evaluate curves or surfaces, so a

@@ -22,6 +22,7 @@ log = "0.4"
 cad-ir = { path = "crates/cad-ir" }
 cad-step = { path = "crates/cad-step" }
 xt-parser = { path = "crates/xt-parser" }
+cad-tess = { path = "crates/cad-tess" }
 
 [profile.release]
 opt-level = 3

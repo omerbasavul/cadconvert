@@ -42,12 +42,37 @@ impl Surface {
                 u_period: None,
                 v_period: None,
             },
-            Surface::Cylinder { .. } | Surface::Cone { .. } => Domain {
+            Surface::Cylinder { .. } => Domain {
                 u: full_turn,
                 v: unbounded,
                 u_period: Some(TAU),
                 v_period: None,
             },
+            // A cone is bounded on one side by its apex, where the radius
+            // reaches zero. Reporting it as unbounded loses the one v value a
+            // conical face can legitimately close onto, which is exactly what a
+            // countersink or a chamfer that runs to a point needs.
+            Surface::Cone {
+                radius, half_angle, ..
+            } => {
+                let tan = half_angle.tan();
+                let v = if tan.abs() > 1e-12 {
+                    let apex = -radius / tan;
+                    if tan > 0.0 {
+                        Interval::new(apex, UNBOUNDED)
+                    } else {
+                        Interval::new(-UNBOUNDED, apex)
+                    }
+                } else {
+                    unbounded
+                };
+                Domain {
+                    u: full_turn,
+                    v,
+                    u_period: Some(TAU),
+                    v_period: None,
+                }
+            }
             Surface::Sphere { .. } => Domain {
                 u: full_turn,
                 v: Interval::new(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),

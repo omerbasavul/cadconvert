@@ -210,6 +210,26 @@ impl Scene {
             .collect()
     }
 
+    /// World-space bounds taken from topological vertices only.
+    ///
+    /// The scale a relative tessellation tolerance should be measured against:
+    /// it is available before any mesh exists, and unlike [`Scene::bounds`] it
+    /// cannot be dragged out by a far-flung spline control point. Falls back to
+    /// [`Scene::bounds`] for a scene whose bodies have no vertices at all.
+    pub fn vertex_bounds(&self) -> Aabb {
+        let mut b = Aabb::EMPTY;
+        for inst in self.instances() {
+            let g = self.geometry_of(inst.geometry);
+            if let Some(solid) = &g.brep {
+                let local = solid.vertex_bounds();
+                if !local.is_empty() {
+                    b = b.union(&local.transformed(&inst.transform));
+                }
+            }
+        }
+        if b.is_empty() { self.bounds() } else { b }
+    }
+
     /// World-space bounds of every tessellated instance.
     pub fn bounds(&self) -> Aabb {
         let mut b = Aabb::EMPTY;

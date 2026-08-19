@@ -131,38 +131,77 @@ T51 : TRANSMIT FILE created by modeller version 300116823 SCH_3001168_30100_1300
 }
 
 #[cfg(test)]
-mod entity_tests {
-    #[test]
-    fn attribute_parse_trace() {
-        // Simulate exact stream after BODY: "81 255 1 2 299 10 1 11 0 0 0 12 70 ..."
-        let mut input = "81 255 1 2 299 10 1 11 0 0 0 12 70 11 1 0";
-        let entities = crate::entity::parse_entities(&mut input, 0).unwrap();
-        eprintln!("Parsed {} entities from ATTRIBUTE test", entities.len());
-        for e in &entities {
-            eprintln!("  type={} idx={} fields={}", e.type_id, e.index, e.fields.len());
-        }
-        eprintln!("Remaining: {:?}", input);
-    }
-}
+mod sample_tests {
+    //! Regression over the real SolidWorks and Solid Edge exports.
+    //!
+    //! The sample directory is not part of the repository, so these skip rather
+    //! than fail when it is absent — but when it is present they are the only
+    //! check that covers both stream dialects and four modeller generations.
+    //! Point `XT_SAMPLES` at a directory of `.x_t` files to run them.
 
-#[cfg(test)]
-mod batch_test {
+    const DEFAULT_SAMPLES: &str = "/Users/omerbasavul/Downloads/3D Model bütün dosya formatları";
+
+    fn sample_dir() -> Option<std::path::PathBuf> {
+        let dir = std::env::var("XT_SAMPLES").unwrap_or_else(|_| DEFAULT_SAMPLES.to_string());
+        let path = std::path::PathBuf::from(dir);
+        path.is_dir().then_some(path)
+    }
+
+    fn samples() -> Vec<std::path::PathBuf> {
+        let Some(dir) = sample_dir() else {
+            return Vec::new();
+        };
+        let mut out: Vec<_> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("x_t")))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every sample that parses must produce a body with at least one face, and
+    /// the ones that do not parse must be named — a silent zero-body success is
+    /// the failure mode this guards against.
     #[test]
-    fn entity_counts() {
-        use std::collections::HashMap;
-        let text = std::fs::read_to_string(
-            "/home/kiselev/cadatomic/xt-parser/test-data/abc/xt_files/Part Studio 1 - Part 1.x_t"
-        ).unwrap();
-        let file = crate::parse_xt(&text).unwrap();
-        // Count entities by type
-        eprintln!("Bodies: {}", file.bodies.len());
-        for (i, b) in file.bodies.iter().enumerate() {
-            eprintln!("  body[{}]: shells={} surfaces={} curves={} edges={} vertices={} points={}",
-                i, b.shells.len(), b.surfaces.len(), b.curves.len(),
-                b.edges.len(), b.vertices.len(), b.points.len());
-            for (j, s) in b.shells.iter().enumerate() {
-                eprintln!("    shell[{}]: faces={}", j, s.faces.len());
+    fn known_samples_parse_into_bodies() {
+        let files = samples();
+        if files.is_empty() {
+            eprintln!("no sample directory; skipping");
+            return;
+        }
+
+        let mut failed = Vec::new();
+        let mut empty = Vec::new();
+        for path in &files {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            match crate::parse_xt_file(path) {
+                Err(e) => failed.push(format!("{name}: {e}")),
+                Ok(file) => {
+                    let faces: usize = file
+                        .bodies
+                        .iter()
+                        .flat_map(|b| b.shells.iter())
+                        .map(|s| s.faces.len())
+                        .sum();
+                    if file.bodies.is_empty() || faces == 0 {
+                        empty.push(format!("{name}: {} bodies, {faces} faces", file.bodies.len()));
+                    }
+                }
             }
         }
+
+        // The 36 MB Solid Edge export uses a PS 37 schema with entity types this
+        // parser does not model yet, so it is expected to fail until it does.
+        let unexpected: Vec<_> = failed
+            .iter()
+            .filter(|f| !f.starts_with("910 2001 007.x_t"))
+            .collect();
+        assert!(
+            unexpected.is_empty() && empty.is_empty(),
+            "parse failures: {unexpected:#?}\nempty results: {empty:#?}"
+        );
     }
 }
