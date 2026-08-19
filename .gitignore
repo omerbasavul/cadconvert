@@ -1,0 +1,7 @@
+/target
+**/target
+.DS_Store
+.idea/
+out/
+*.glb
+*.usdz
