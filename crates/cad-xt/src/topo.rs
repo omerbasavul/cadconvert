@@ -217,7 +217,12 @@ impl<'a> Lowering<'a> {
         if surface_ptr == 0 {
             return Err("face has no surface".into());
         }
-        let surface = self.intern_surface(surface_ptr)?;
+        let surface = match self.intern_surface(surface_ptr) {
+            Ok(s) => s,
+            // Blend-family surfaces have no closed-form lowering; a face on
+            // one is rebuilt as a Coons patch from its own boundary instead.
+            Err(reason) => return self.lower_face_as_coons(fe, reason),
+        };
 
         // The face sense char composes with the surface's own sense char.
         let face_reversed = matches!(chr(fe, 8), 'R' | '-');
@@ -252,6 +257,132 @@ impl<'a> Lowering<'a> {
             surface,
             same_sense,
             bounds,
+        });
+        self.face_sources.push(fe.index);
+        Ok(Some(fid))
+    }
+
+    /// Rebuild a face whose surface cannot be lowered from its boundary.
+    ///
+    /// The blend family — rolling-ball fillets — is the case: their exact
+    /// evaluation needs contact solving against both mating surfaces, but a
+    /// fillet band is four-sided (two rails, two arc caps) and its boundary
+    /// edges all lie on surfaces this crate lowers. A bilinearly blended Coons
+    /// patch over those four sides reproduces the rails exactly and carries
+    /// the cap arcs' profile across the band, which is the fillet's shape to
+    /// within the blend between its two end profiles.
+    ///
+    /// The patch is stored as a degree-1 NURBS through a sampled Coons grid,
+    /// so downstream it is an ordinary surface: invertible, tessellatable,
+    /// nothing special-cased.
+    fn lower_face_as_coons(
+        &mut self,
+        fe: &RawEntity,
+        original: String,
+    ) -> Result<Option<FaceId>, String> {
+        // The loops first — their edges live on neighbouring surfaces and
+        // lower normally.
+        let mut bounds = Vec::new();
+        let mut lp = ptr(fe, 5);
+        let mut seen = rustc_hash::FxHashSet::default();
+        while lp != 0 && seen.insert(lp) {
+            let Some(le) = self.index.get(&lp).filter(|e| e.type_id == xt::LOOP) else {
+                break;
+            };
+            if let Ok(Some(bound)) = self.lower_loop(le) {
+                bounds.push(bound);
+            }
+            lp = ptr(le, 4);
+        }
+        if bounds.len() != 1 {
+            return Err(format!(
+                "{original}; boundary rebuild needs exactly one loop, found {}",
+                bounds.len()
+            ));
+        }
+        let Some(bound) = bounds.pop() else {
+            return Err(format!("{original}; boundary rebuild lost its loop"));
+        };
+        if bound.halves.len() != 4 {
+            return Err(format!(
+                "{original}; boundary rebuild needs a four-sided loop, found {} sides",
+                bound.halves.len()
+            ));
+        }
+
+        // Sample each side head-to-tail.
+        const N: usize = 16;
+        let side: Vec<Vec<Vec3>> = bound
+            .halves
+            .iter()
+            .map(|h| {
+                let e = self.solid.edge(h.edge);
+                let c = self.solid.curve(e.curve);
+                let pts: Vec<Vec3> = (0..=N)
+                    .map(|k| c.point_at(e.range.at(k as f64 / N as f64)))
+                    .collect();
+                if h.forward {
+                    pts
+                } else {
+                    pts.into_iter().rev().collect()
+                }
+            })
+            .collect();
+
+        // Coons: walking the loop, side 0 is v = 0 (u forward), side 1 is
+        // u = 1 (v forward), sides 2 and 3 run backwards around the loop.
+        let c0 = &side[0];
+        let c1 = &side[1];
+        let c2: Vec<Vec3> = side[2].iter().rev().copied().collect();
+        let c3: Vec<Vec3> = side[3].iter().rev().copied().collect();
+        let p00 = c0[0];
+        let p10 = c0[N];
+        let p11 = c2[N];
+        let p01 = c2[0];
+
+        let mut grid = vec![vec![Vec3::ZERO; N + 1]; N + 1];
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..=N {
+            let u = i as f64 / N as f64;
+            for j in 0..=N {
+                let v = j as f64 / N as f64;
+                let ruled_v = c0[i] * (1.0 - v) + c2[i] * v;
+                let ruled_u = c3[j] * (1.0 - u) + c1[j] * u;
+                let bilinear = p00 * ((1.0 - u) * (1.0 - v))
+                    + p10 * (u * (1.0 - v))
+                    + p01 * ((1.0 - u) * v)
+                    + p11 * (u * v);
+                grid[i][j] = ruled_v + ruled_u - bilinear;
+            }
+        }
+
+        // Degree 1 through the grid: knots 0, 0, 1/N … 1, 1.
+        let mut knots = vec![0.0];
+        knots.extend((0..=N).map(|k| k as f64 / N as f64));
+        knots.push(1.0);
+        let surface = cad_ir::brep::Surface::Nurbs(cad_ir::brep::NurbsSurface {
+            u_degree: 1,
+            v_degree: 1,
+            control_points: grid,
+            weights: Vec::new(),
+            u_knots: knots.clone(),
+            v_knots: knots,
+            u_closed: false,
+            v_closed: false,
+        });
+        let sid = SurfaceId(self.solid.surfaces.len() as u32);
+        self.solid.surfaces.push(surface);
+
+        // The patch was built in the loop's own winding, so the surface
+        // normal already follows the face's outward side.
+        let fid = FaceId(self.solid.faces.len() as u32);
+        self.solid.faces.push(Face {
+            surface: sid,
+            same_sense: true,
+            bounds: vec![Bound {
+                outer: true,
+                ..bound
+            }],
         });
         self.face_sources.push(fe.index);
         Ok(Some(fid))
