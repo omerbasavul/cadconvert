@@ -1,0 +1,42 @@
+<!-- Where the native library is, and what it is called here.
+     ================================================================
+     Properties only. A project that merely needs to *find* the library imports
+     this; the one that builds it imports Native.targets, which imports this in
+     turn. Keeping them apart is what stops every project in the solution from
+     running cargo: two of them did, and cargo ran twice per build. -->
+<Project>
+
+  <PropertyGroup>
+    <NativeRoot>$(MSBuildThisFileDirectory)../native/</NativeRoot>
+    <RuntimesRoot>$(MSBuildThisFileDirectory)../runtimes/</RuntimesRoot>
+
+    <!-- Debug builds the dev profile so a native breakpoint is usable; every
+         other configuration takes release, because a debug build of the
+         tessellator is roughly twenty times slower and nobody wants that by
+         accident. -->
+    <CargoProfile Condition="'$(Configuration)' == 'Debug'">dev</CargoProfile>
+    <CargoProfile Condition="'$(CargoProfile)' == ''">release</CargoProfile>
+    <CargoOutputDir Condition="'$(CargoProfile)' == 'dev'">debug</CargoOutputDir>
+    <CargoOutputDir Condition="'$(CargoOutputDir)' == ''">release</CargoOutputDir>
+
+    <!-- The runtime identifier of the machine doing the building. Only its own
+         library can be produced here; the rest come from CI. -->
+    <NativeRid Condition="'$(NativeRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</NativeRid>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <NativeLibraryName>cadconvert.dll</NativeLibraryName>
+  </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <NativeLibraryName>libcadconvert.dylib</NativeLibraryName>
+  </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <NativeLibraryName>libcadconvert.so</NativeLibraryName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NativeLibraryBuilt>$(NativeRoot)target/$(CargoOutputDir)/$(NativeLibraryName)</NativeLibraryBuilt>
+    <NativeLibraryStaged>$(RuntimesRoot)$(NativeRid)/native/$(NativeLibraryName)</NativeLibraryStaged>
+  </PropertyGroup>
+
+</Project>

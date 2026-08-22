@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/chainlink_n.dds"
+color texture "bump_file_texture" "Images\textures\pheno_support\wire_bump.bmp" 
+"col1" 0.576471 0.564706 0.54902
+color texture "color_texname" "Images\textures\pheno_support\wire_bw.bmp"
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0508
+"initTextureWidth" 0.0508
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0
+"specular_color" 1 1 1
+"specular_factor" 0.29
+"swP2M" on
+"sw_shader" chainlinksteel
+"transparency" 0

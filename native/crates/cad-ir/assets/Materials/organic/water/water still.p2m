@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "Images\shaders\surfacefinish/water_normalmap.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/water_normalmap.dds" 
+"col1" 0.847059 0.921569 1
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0508
+"initTextureWidth" 0.0508
+"luminousIntensity" 0
+"mtl_ior" 1.33
+"num_cols" 1
+"reflectivity" 1
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 0 1 1
+"specular_factor" 1
+"swP2M" on
+"sw_shader" waterstill
+"transparency" 0.7

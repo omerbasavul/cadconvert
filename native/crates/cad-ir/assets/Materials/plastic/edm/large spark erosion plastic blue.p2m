@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/edm_spark_n.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/edm_spark_n.dds" 
+"col1" 0.137255 0.294118 0.74902
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.1524
+"initTextureWidth" 0.1524
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.93
+"specular_color" 1 1 1
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" largesparkerosionplasticblue
+"transparency" 0

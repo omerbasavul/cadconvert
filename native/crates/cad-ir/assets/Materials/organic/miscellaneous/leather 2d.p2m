@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.00025
+"bumpTexture" "Images\shaders\surfacefinish/leather_n.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/leather_n.dds" 
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\organic\miscellaneous\leather.jpg" 
+"diffuse_factor" 0.65
+"displacementDistance" 0.00025
+"doubleSided" on
+"initTextureHeight" 0.0254
+"initTextureWidth" 0.0254
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0.02
+"refractionRoughness" 0
+"roughness" 0
+"specular_color" 0.858824 0.686275 0.509804
+"specular_factor" 0.02
+"swP2M" on
+"sw_shader" leather
+"transparency" 0

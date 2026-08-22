@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 1e-005
+"bumpTexture" ""
+"col1" 0.97 1 1
+"diffuse_factor" 1.0
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.00635
+"initTextureWidth" 0.00635
+"luminousIntensity" 0
+"mtl_ior" 1.53
+"num_cols" 1
+"reflectivity" 0.02
+"refractionRoughness" 0.05
+"roughness" 0.05
+"specular_color" 0.901961 0.901961 0.901961
+"specular_factor" 0.02
+"swP2M" on
+"sw_shader" glassfrosted01
+"transparency" 0.8

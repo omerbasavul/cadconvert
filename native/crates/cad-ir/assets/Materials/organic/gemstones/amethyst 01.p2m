@@ -1,0 +1,19 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.42 0.27 0.47
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"luminousIntensity" 0
+"mtl_ior" 1.544
+"num_cols" 1
+"reflectivity" 0.2
+"refractionRoughness" 0
+"roughness" 0.1
+"specular_color" 0.86 0.78 0.88
+"specular_factor" 0.2
+"swP2M" on
+"sw_shader" amethyst01
+"transparency" 0.6

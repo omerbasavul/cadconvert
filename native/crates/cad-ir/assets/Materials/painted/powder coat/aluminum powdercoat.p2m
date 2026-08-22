@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/powdercoat_n.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/powdercoat_n.dds" 
+color texture "color_texname" "Images\textures\painted\powdercoat_light.jpg" 
+"col1" 0.901961 0.921569 0.921569
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.00635
+"initTextureWidth" 0.00635
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.92
+"specular_color" 0.909804 0.929412 0.937255
+"specular_factor" 1
+"swP2M" on
+"sw_shader" aluminumpowdercoat
+"transparency" 0

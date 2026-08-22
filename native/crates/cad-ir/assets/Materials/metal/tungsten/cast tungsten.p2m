@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/cast.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/cast.dds" 
+"col1" 0.6 0.607843 0.537255
+"col2" 0.627451 0.639216 0.568627
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.01524
+"initTextureWidth" 0.01524
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.4
+"refractionRoughness" 0
+"roughness" 0.8
+"specular_color" 1 0.984314 0.992157
+"specular_factor" 0.8
+"swP2M" on
+"sw_shader" casttungsten
+"transparency" 0

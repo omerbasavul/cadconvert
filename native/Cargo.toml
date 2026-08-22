@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/omerbasavul/cadmesh"
+authors = ["omerbasavul"]
+
+[workspace.dependencies]
+winnow = "0.7"
+thiserror = "2"
+anyhow = "1"
+rayon = "1"
+memchr = "2"
+rustc-hash = "2"
+log = "0.4"
+
+cad-ir = { path = "crates/cad-ir" }
+cad-step = { path = "crates/cad-step" }
+xt-parser = { path = "crates/xt-parser" }
+cad-tess = { path = "crates/cad-tess" }
+cad-export = { path = "crates/cad-export" }
+cad-convert = { path = "crates/cad-convert" }
+cad-xt = { path = "crates/cad-xt" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# Unwinding, deliberately. This is a library others embed — a CLI, an FFI
+# boundary, a NuGet package — and aborting on a panic takes the host process
+# with it. A face whose boundary the triangulator cannot cope with has to
+# degrade to a face that failed, which the report already knows how to say.
+
+[profile.bench]
+inherits = "release"

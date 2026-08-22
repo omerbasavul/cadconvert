@@ -1,0 +1,20 @@
+# The SolidWorks libraries are carried verbatim, CRLF and all: they are data
+# this project reads, not source it edits, and the parsers are written against
+# the bytes SolidWorks writes.
+*.p2m -text
+*.sldmat -text
+
+# Everything else is normalised on the way in, so a checkout on Windows and one
+# on Linux hold the same bytes.
+* text=auto
+*.rs text
+*.cs text
+*.csproj text
+*.slnx text
+*.props text
+*.targets text
+*.md text
+*.yml text
+*.toml text
+*.h text
+*.sh text eol=lf

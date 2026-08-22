@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 1 0.909804 0.619608
+"col2" 1 0.807843 0.498039
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.008382
+"initTextureWidth" 0.008382
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 0.964706 1 0.839216
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" satinfinishgold
+"transparency" 0

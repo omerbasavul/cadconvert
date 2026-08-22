@@ -1,0 +1,10 @@
+[package]
+name = "cad-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Format-neutral B-Rep, scene and material intermediate representation for CAD conversion"
+build = "build.rs"
+
+[dependencies]
+thiserror.workspace = true

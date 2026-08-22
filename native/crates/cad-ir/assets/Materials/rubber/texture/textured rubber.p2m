@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.005
+"bumpTexture" "images\shaders\..\textures\plastic\bumpy\spark_bump.jpg"
+"col1" 0.294118 0.294118 0.294118
+"diffuse_factor" 1
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.0508
+"initTextureWidth" 0.0508
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.9
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" texturedrubber
+"transparency" 0

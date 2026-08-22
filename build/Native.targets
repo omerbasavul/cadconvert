@@ -1,0 +1,44 @@
+<!-- Building the native library as part of `dotnet build`.
+     ================================================================
+     The .NET solution is this repository's container: one `dotnet build` has to
+     produce a package that works, and a package without its native library
+     fails at the first P/Invoke with no build error anywhere. So the Rust side
+     is not a separate step a human is expected to remember — it is a target.
+
+     Only the library project imports this. Everything else imports
+     Native.props and reads the staged file the library project produced;
+     project references order the two.
+
+     Incrementality is left to cargo, which already tracks every source file
+     and returns in a fraction of a second when nothing changed. Reproducing
+     that here with Inputs/Outputs would mean globbing the whole Rust tree on
+     every build to answer a question cargo answers better.
+
+     Pass -p:BuildNative=false to skip it: CI builds each runtime on its own
+     machine and stages them all before packing, so the pack job must not try
+     to rebuild one. -->
+<Project>
+
+  <Import Project="$(MSBuildThisFileDirectory)Native.props" />
+
+  <Target Name="BuildNativeLibrary" Condition="'$(BuildNative)' != 'false'">
+    <Message Importance="high"
+             Text="cargo build --profile $(CargoProfile) -p cad-ffi   ($(NativeRid))" />
+    <Exec Command="cargo build --profile $(CargoProfile) -p cad-ffi --manifest-path &quot;$(NativeRoot)Cargo.toml&quot;"
+          WorkingDirectory="$(NativeRoot)" />
+    <Error Condition="!Exists('$(NativeLibraryBuilt)')"
+           Text="cargo reported success but $(NativeLibraryBuilt) is not there." />
+  </Target>
+
+  <Target Name="StageNativeLibrary"
+          AfterTargets="BuildNativeLibrary"
+          BeforeTargets="BeforeBuild;BeforeResolveReferences"
+          DependsOnTargets="BuildNativeLibrary"
+          Condition="'$(BuildNative)' != 'false'">
+    <Copy SourceFiles="$(NativeLibraryBuilt)"
+          DestinationFolder="$(RuntimesRoot)$(NativeRid)/native/"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="staged $(NativeRid)/native/$(NativeLibraryName)" />
+  </Target>
+
+</Project>

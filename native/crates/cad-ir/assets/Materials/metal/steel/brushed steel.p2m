@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpStrength" 0.0
+"bumpTexture" ""
+"col1" 1 0.95 0.91
+"col2" 0.78 0.76 0.74
+"diffuse_factor" 1
+"displacementDistance" 0.0
+"doubleSided" on
+"initTextureHeight" 0.022352
+"initTextureWidth" 0.022352
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.25
+"specular_color" 1 1 1
+"specular_factor" 0.8
+"swP2M" on
+"sw_shader" brushedsteel
+"transparency" 0

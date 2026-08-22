@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "Images\shaders\surfacefinish/floortile_red_ceramic_n.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/floortile_red_ceramic_n.dds" 
+"col1" 0.792157 0.803922 0.811765
+"col2" 0.819608 0.4 0.337255
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.1016
+"initTextureWidth" 0.1016
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 0.819608 0.639216 0.639216
+"specular_factor" 0.3
+"swP2M" on
+"sw_shader" redceramictile
+"transparency" 0

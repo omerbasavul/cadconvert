@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.109804 0.164706 0.137255
+"col2" 0.709804 0.756863 0.509804
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.381
+"initTextureWidth" 0.381
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 0.721569 1 0.721569
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" greenmarble
+"transparency" 0

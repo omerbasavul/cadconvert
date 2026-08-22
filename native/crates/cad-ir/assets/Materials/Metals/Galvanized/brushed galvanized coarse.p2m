@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.00025
+"bumpTexture" "images\shaders\surfacefinish/_brushed.dds"
+color texture "bump_file_texture" "Images\textures\metal\brushed\brush5.jpg" 
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\metal\galvanized\galvanized.jpg" 
+"diffuse_factor" 1
+"displacementDistance" 0.00025
+"doubleSided" on
+"initTextureHeight" 0.1016
+"initTextureWidth" 0.1016
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0.24
+"refractionRoughness" 0
+"roughness" 0.25
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" brushedgalvanized
+"transparency" 0

@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "Images\shaders\surfacefinish/birch_n.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/birch_n.dds" 
+"col1" 0.988235 0.737255 0.466667
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0381
+"initTextureWidth" 0.0381
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0
+"specular_color" 1 1 1
+"specular_factor" 0.01
+"swP2M" on
+"sw_shader" unfinishedyellowbirch
+"transparency" 0

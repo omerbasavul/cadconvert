@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 1 0 0
+"col2" .97 .26 .26
+"diffuse_factor" 0.8
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0971907
+"initTextureWidth" 0.0971907
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.6
+"refractionRoughness" 0
+"roughness" 0.65
+"specular_color" .97 .26 .26
+"specular_factor" 0.3
+"swP2M" on
+"sw_shader" candyappleredcarpainthq
+"transparency" 0

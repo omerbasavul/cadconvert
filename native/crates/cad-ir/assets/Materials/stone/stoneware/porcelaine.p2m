@@ -1,0 +1,24 @@
+"ambience" 1 1 1
+"amplitude" 0
+"blend" 0
+"blurryReflections" off
+"col1" 0.988235 0.984314 1
+"col2" 0 0 0
+"col3" 0 0 0
+"decal_val" 0 0 0
+"detail" 1
+"diffuse_factor" 1
+"illum" "model_5.p2a"
+"metallic_color" 0 0 0
+"metallic_ior" 0 0 0
+"mtl_ior" 1
+"num_cols" 1
+"pattern_scale" 0
+"reflectivity" 0.15
+"roughness" 0.000000
+"scale" 1e-006
+"specular_color" 1 0.960784 0.909804
+"specular_factor" 0.2
+"swP2M" on
+"sw_shader" porcelain
+"transparency" 0

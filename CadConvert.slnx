@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/CadConvert.Bench/CadConvert.Bench.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/CadConvert/CadConvert.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CadConvert.Smoke/CadConvert.Smoke.csproj" />
+  </Folder>
+</Solution>

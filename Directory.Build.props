@@ -1,0 +1,13 @@
+<!-- Settings every project here shares, so a new one starts consistent and no
+     project carries a copy that can drift. -->
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Build output beside the solution rather than inside each project, so
+         the tree holds source and nothing else. -->
+    <ArtifactsPath>$(MSBuildThisFileDirectory)out/dotnet</ArtifactsPath>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpStrength" 7e-005
+"bumpTexture" "images\shaders\surfacefinish/PlasticPolystyrene_normalmap.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/plasticpolystyrene_normalmap.dds" 
+"col1" 1 1 1
+"diffuse_factor" 1
+"displacementDistance" 7e-005
+"doubleSided" off
+"initTextureHeight" 0.00635
+"initTextureWidth" 0.00635
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.69
+"specular_color" 0.898039 0.898039 0.898039
+"specular_factor" 1
+"swP2M" on
+"sw_shader" PlasticPolystyrene
+"transparency" 0

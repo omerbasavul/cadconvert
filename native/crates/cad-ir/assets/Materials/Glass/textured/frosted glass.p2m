@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 1e-005
+"bumpTexture" "images\shaders\surfacefinish/plasticmt11040_normalmap.dds"
+"col1" 1 1 1
+"diffuse_factor" 0.4
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.0021082
+"initTextureWidth" 0.0021082
+"luminousIntensity" 0
+"mtl_ior" 1.2
+"num_cols" 1
+"reflectivity" 0.02
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" frostedglass
+"transparency" 0.8

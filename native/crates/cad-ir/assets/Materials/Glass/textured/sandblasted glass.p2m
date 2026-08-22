@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 1e-005
+"bumpTexture" "images\shaders\surfacefinish/sandblasted.dds"
+"col1" 1 1 1
+"diffuse_factor" 0.5
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.00254
+"initTextureWidth" 0.00254
+"luminousIntensity" 0
+"mtl_ior" 1.2
+"num_cols" 1
+"reflectivity" 0.1
+"refractionRoughness" 0
+"roughness" 0.6
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" sandblastedglass
+"transparency" 0.5

@@ -5,3 +5,29 @@
 out/
 *.glb
 *.usdz
+
+# The SolidWorks appearance library under native/crates/cad-ir/assets.
+#
+# The 619 `.p2m` files are 332 KB of text, are compiled into the crate by
+# build.rs and are the only statement of how a finish looks — they belong in
+# the repository. The images beside them are 935 MB of textures, HDR
+# environments and thumbnails that the converter never opens; a `.p2m` names
+# them by a path inside a SolidWorks installation and nothing here resolves it.
+native/crates/cad-ir/assets/Images/
+native/crates/cad-ir/assets/**/*.jpg
+native/crates/cad-ir/assets/**/*.png
+native/crates/cad-ir/assets/**/*.dds
+native/crates/cad-ir/assets/**/*.hdr
+native/crates/cad-ir/assets/**/*.bmp
+native/crates/cad-ir/assets/**/*.tif
+native/crates/cad-ir/assets/**/*.rgb
+native/crates/cad-ir/assets/**/*.xml
+
+# The native libraries staged for the NuGet package, and the packages
+# themselves. Both are build output: `dotnet/pack.sh` rebuilds the first and
+# produces the second, and a copy checked in is a copy that goes stale.
+runtimes/
+dist/
+
+# Render evidence. Generated, not source.
+renders/

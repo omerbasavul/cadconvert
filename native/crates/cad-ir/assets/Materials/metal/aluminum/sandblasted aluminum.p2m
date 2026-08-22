@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/sandblasted.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/sandblasted.dds" 
+"col1" 0.666667 0.698039 0.768627
+"col2" 0.898039 0.917647 0.929412
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.008382
+"initTextureWidth" 0.008382
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.65
+"specular_color" 0.909804 0.929412 0.937255
+"specular_factor" 1
+"swP2M" on
+"sw_shader" sandblastedaluminum
+"transparency" 0

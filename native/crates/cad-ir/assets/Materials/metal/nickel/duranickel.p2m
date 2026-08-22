@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+color texture "bump_file_texture" "Images\textures\metal\brushed\brshmtl8.jpg"
+"col1" 0.568627 0.54902 0.509804
+"col2" 0.686275 0.607843 0.529412
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.00127
+"initTextureWidth" 0.00127
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" brushednickel
+"transparency" 0

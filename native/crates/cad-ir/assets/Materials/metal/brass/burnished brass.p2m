@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.00025
+"bumpTexture" ""
+"col1" 1.00 0.87 0.53
+"col2" 0.83 0.67 0.13
+"diffuse_factor" 1.0
+"displacementDistance" 0.00025
+"doubleSided" on
+"initTextureHeight" 0.0127
+"initTextureWidth" 0.0127
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 1 1 1
+"specular_factor" 0.8
+"swP2M" on
+"sw_shader" burnishedbrass
+"transparency" 0

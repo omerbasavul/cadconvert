@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "Images\shaders\surfacefinish/asphalt_n.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/asphalt_n.dds" 
+"col1" 1 0.756863 0.564706
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0381
+"initTextureWidth" 0.0381
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.12
+"refractionRoughness" 0
+"roughness" 0.93
+"specular_color" 0.886275 0.792157 0.654902
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" earthenware
+"transparency" 0

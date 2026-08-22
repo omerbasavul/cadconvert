@@ -1,0 +1,29 @@
+"ambience" 1 1 1
+"amplitude" 0
+"blend" -2.0
+"blurryReflections" on
+"col1" 1 1 1
+"col2" 0 0 0
+"col3" 0 0 0
+"decal_val" 0 0 0
+"detail" 0
+"diffuse_factor" 1
+"holes" 0.5
+"illum" "model_3.p2a"
+"max" 1 1 1
+"metallic_color" 0 0 0
+"metallic_ior" 0 0 0
+"min" 0 0 0
+"mtl_ior" 1
+"num_cols" 1
+"pattern_scale" 0
+"reflectivity" 0.15
+"repeat" 0 0 0
+"roughness" 0.800000
+"scale" 0.5
+"specular_color" 1 1 1
+"specular_factor" 0.2
+"swP2M" on
+"sw_shader" circularmeshplastic
+"transparency" 0
+"transparency_effect" "circle.p2a"

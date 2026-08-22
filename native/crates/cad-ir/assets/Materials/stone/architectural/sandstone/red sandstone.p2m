@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.666667 0.329412 0.239216
+"col2" 0.603922 0.176471 0.14902
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.762
+"initTextureWidth" 0.762
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0
+"specular_color" 1 1 1
+"specular_factor" 0.01
+"swP2M" on
+"sw_shader" redsandstone
+"transparency" 0

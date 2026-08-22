@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.4 0.184314 0.0901961
+"col2" 0.937255 0.666667 0.54902
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.381
+"initTextureWidth" 0.381
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 1 0.776471 0.776471
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" pinkmarble
+"transparency" 0

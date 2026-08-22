@@ -1,0 +1,15 @@
+"ambience" 1 1 1
+"col1" 1 1 1
+"color_effect" "2d.p2a"
+color texture "color_texname" "Images\textures\pattern\checker.jpg"
+"ctex" "color_texname"
+"diffuse_factor" 1
+"illum" "model_3.p2a"
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 
+"roughness" 0.000000
+"specular_color" 1 1 1
+"specular_factor" 
+"swP2M" on
+"sw_shader" 

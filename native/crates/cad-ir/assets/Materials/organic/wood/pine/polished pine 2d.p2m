@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\organic\wood\pine\polished pine.jpg" 
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.14224
+"initTextureWidth" 0.14224
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0.05
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 1 1 1
+"specular_factor" 1
+"swP2M" on
+"sw_shader" polishedpine
+"transparency" 0

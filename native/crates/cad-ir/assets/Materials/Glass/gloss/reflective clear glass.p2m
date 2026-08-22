@@ -1,0 +1,14 @@
+"blurryReflections" off
+"col1" 1 1 1
+"diffuse_factor" 1
+"illum" "model_6.p2a"
+"mtl_ior" 1.591
+"num_cols" 1
+"pattern_scale" 0.15
+"reflectivity" 0.75
+"roughness" 0.700000
+"specular_color" 1 1 1
+"specular_factor" 0.9
+"swP2M" on
+"sw_shader" reflectiveclearglass
+"transparency" 0.65

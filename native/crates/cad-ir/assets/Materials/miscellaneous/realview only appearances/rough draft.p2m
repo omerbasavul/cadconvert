@@ -1,0 +1,18 @@
+"ambience" 1 1 1
+"blurryReflections" on
+"col1" 0.3 0.3 0.3
+"color_effect" "npr.p2a"
+color texture "color_texname" "Images\textures\pheno_support\hatch123.png"
+"color_texname2" color texture "Images\textures\pheno_support\hatch456.png"
+"ctex" "color_texname"
+"ctex2" "color_texname2"
+"diffuse_factor" 1
+"illum" "model_3.p2a"
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.5
+"roughness" 0.800000
+"specular_color" 1 1 1
+"specular_factor" 0.8
+"swP2M" on
+"sw_shader" cartoonsketch

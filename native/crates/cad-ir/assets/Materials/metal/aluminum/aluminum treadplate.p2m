@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.005
+"bumpTexture" "images\shaders\surfacefinish/treadplate.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/treadplate.dds" 
+"col1" 0.898039 0.917647 0.929412
+"col2" 0.666667 0.698039 0.768627
+"diffuse_factor" 1
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.0508
+"initTextureWidth" 0.0508
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.6
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 1 1 1
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" aluminumtreadplate
+"transparency" 0

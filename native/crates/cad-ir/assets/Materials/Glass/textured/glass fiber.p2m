@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/GlassFibre_normalmap.dds"
+"col1" 0.847059 0.847059 0.847059
+"diffuse_factor" 0.8
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.010922
+"initTextureWidth" 0.010922
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.1
+"refractionRoughness" 0
+"roughness" 0.65
+"specular_color" 1 1 1
+"specular_factor" 1
+"swP2M" on
+"sw_shader" glassfibre
+"transparency" 0

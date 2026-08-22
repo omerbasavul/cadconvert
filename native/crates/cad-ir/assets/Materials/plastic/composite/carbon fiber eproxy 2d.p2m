@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+color texture "bump_file_texture" "Images\textures\plastic\composite\carbon fiber eproxy.jpg" 
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\plastic\composite\carbon fiber eproxy.jpg" 
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.03175
+"initTextureWidth" 0.03175
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0.05
+"refractionRoughness" 0
+"roughness" 0.5
+"specular_color" 1 1 1
+"specular_factor" 1
+"swP2M" on
+"sw_shader" carbonfiberepoxy
+"transparency" 0

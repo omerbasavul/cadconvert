@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 1e-005
+color texture "bump_file_texture" "Images\shaders\../textures/organic/wood/oak/unfinished oak endgrain bump.jpg" 
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\organic\wood\oak\unfinished oak endgrain.jpg" 
+"diffuse_factor" 1
+"displacementDistance" 1e-005
+"doubleSided" on
+"initTextureHeight" 0.0508
+"initTextureWidth" 0.2032
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0
+"specular_color" 1 1 1
+"specular_factor" 0.01
+"swP2M" on
+"sw_shader" unfinishedoakendgrain
+"transparency" 0

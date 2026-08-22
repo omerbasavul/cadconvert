@@ -1,0 +1,12 @@
+"blurryReflections" off
+"col1" 1 1 1
+"diffuse_factor" 1
+"illum" "model_3.p2a"
+"num_cols" 1
+"reflectivity" 0.2
+"roughness" 0.900000
+"specular_color" 1 1 1
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" polycarbonateplastic
+"transparency" 0.65

@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.005
+"bumpTexture" "images\shaders\surfacefinish/knurled.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/knurled.dds" 
+"col1" 0 0.501961 1
+"diffuse_factor" 1
+"displacementDistance" 0.005
+"doubleSided" on
+"initTextureHeight" 0.00635
+"initTextureWidth" 0.00635
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0
+"refractionRoughness" 0
+"roughness" 0.93
+"specular_color" 1 1 1
+"specular_factor" 0.3
+"swP2M" on
+"sw_shader" blueknurledplastic
+"transparency" 0

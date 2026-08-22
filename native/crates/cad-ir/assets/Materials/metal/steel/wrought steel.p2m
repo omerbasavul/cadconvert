@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/CopperWrought_normalmap.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/copperwrought_normalmap.dds" 
+"col1" 0.647059 0.619608 0.588235
+"col2" 0.776471 0.756863 0.737255
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0762
+"initTextureWidth" 0.0762
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 1 1 1
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" WroughtStainlessSteel
+"transparency" 0

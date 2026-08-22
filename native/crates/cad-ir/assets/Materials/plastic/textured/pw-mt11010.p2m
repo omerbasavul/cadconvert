@@ -1,0 +1,21 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpStrength" 2.5e-005
+"bumpTexture" "images\shaders\surfacefinish/plasticmt11010_normalmap.dds"
+"col1" 0.109804 0.109804 0.109804
+"diffuse_factor" 1
+"displacementDistance" 2.5e-005
+"doubleSided" on
+"initTextureHeight" 0.00889
+"initTextureWidth" 0.00889
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.1
+"refractionRoughness" 0
+"roughness" 0.93
+"specular_color" 0.898039 0.898039 0.898039
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" PlasticMT11010
+"transparency" 0

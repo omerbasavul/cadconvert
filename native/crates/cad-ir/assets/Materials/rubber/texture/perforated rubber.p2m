@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "images\shaders\surfacefinish/circular_mesh_n.dds"
+color texture "bump_file_texture" "images\shaders\surfacefinish/circular_mesh_n.dds" 
+"col1" 0.294118 0.294118 0.294118
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0254
+"initTextureWidth" 0.0254
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.01
+"refractionRoughness" 0
+"roughness" 0.85
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" perforatedrubber
+"transparency" 0

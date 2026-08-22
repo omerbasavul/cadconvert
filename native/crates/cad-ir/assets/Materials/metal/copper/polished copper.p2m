@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.839216 0.466667 0.368627
+"col2" 0.537255 0.34902 0.337255
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0254
+"initTextureWidth" 0.0254
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.65
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 0.992157 0.894118 0.709804
+"specular_factor" 0.7
+"swP2M" on
+"sw_shader" polishedcopper
+"transparency" 0

@@ -1,0 +1,14 @@
+"ambience" 0.6 0.6 0.6
+"blurryReflections" off
+"col1" 0.63 0.66 0.68
+"diffuse_factor" 1
+"illum" "model_3.p2a"
+"mtl_ior" 1.0
+"num_cols" 1
+"reflectivity" 0.0
+"roughness" 0.690000
+"specular_color" 1.0 1.0 1.0
+"specular_factor" 1.0
+"swP2M" on
+"sw_shader" polishedplastic1
+"transparency" 0.0

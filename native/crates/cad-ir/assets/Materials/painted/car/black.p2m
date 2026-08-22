@@ -1,0 +1,22 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.02 0.02 0.02
+"col2" 0.59 0.59 0.63
+"diffuse_factor" 0.8
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.0971907
+"initTextureWidth" 0.0971907
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.35
+"refractionRoughness" 0
+"roughness" 0.65
+"specular_color" 0.59 0.59 0.63
+"specular_factor" 0.35
+"swP2M" on
+"sw_shader" blackcarpaint
+"transparency" 0

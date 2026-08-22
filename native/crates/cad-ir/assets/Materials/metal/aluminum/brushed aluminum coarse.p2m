@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.00025
+"bumpTexture" ""
+"col1" 0.866667 0.909804 1
+"col2" 0.894118 0.913725 0.929412
+"diffuse_factor" 1
+"displacementDistance" 0.00025
+"doubleSided" on
+"initTextureHeight" 0.022352
+"initTextureWidth" 0.022352
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.4
+"specular_color" 1 1 1
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" brushedaluminum
+"transparency" 0

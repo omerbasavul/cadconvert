@@ -1,0 +1,13 @@
+"blurryReflections" off
+"col1" 1 0.956863 0.85098
+"diffuse_factor" 1
+"illum" "model_5.p2a"
+"mtl_ior" 1
+"num_cols" 1
+"reflectivity" 0.15
+"roughness" 0.000000
+"specular_color" 1 0.886275 0.717647
+"specular_factor" 0.2
+"swP2M" on
+"sw_shader" bonechina
+"transparency" 0

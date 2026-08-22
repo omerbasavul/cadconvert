@@ -1,0 +1,24 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" "Images\shaders\surfacefinish/wetconcrete_n.dds"
+color texture "bump_file_texture" "Images\shaders\surfacefinish/wetconcrete_n.dds" 
+"col1" 1 1 1
+color texture "color_texname" "Images\textures\stone\paving\wet concrete.jpg" 
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.1524
+"initTextureWidth" 0.1524
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 0
+"reflectivity" 0.3
+"refractionRoughness" 0
+"roughness" 0.7
+"specular_color" 1 1 1
+"specular_factor" 0.6
+"swP2M" on
+"sw_shader" pavingwetconcrete
+"transparency" 0

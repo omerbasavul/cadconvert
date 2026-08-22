@@ -1,0 +1,23 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" on
+"bumpIsNormalMap" on
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 1 0.956863 0.886275
+"col2" 0.686275 0.607843 0.529412
+"diffuse_factor" 1
+"displacementDistance" 0.001
+"doubleSided" on
+"initTextureHeight" 0.008382
+"initTextureWidth" 0.008382
+"luminousIntensity" 0
+"mtl_ior" 1
+"num_cols" 2
+"reflectivity" 0.5
+"refractionRoughness" 0
+"roughness" 0.4
+"specular_color" 0.984314 0.94902 0.886275
+"specular_factor" 0.5
+"swP2M" on
+"sw_shader" satinfinishnickel
+"transparency" 0

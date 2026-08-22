@@ -1,0 +1,20 @@
+"SurfaceFinishShaderType" 0
+"blurryReflections" off
+"bumpStrength" 0.001
+"bumpTexture" ""
+"col1" 0.87 0.61 0.0
+"col2" 0.89 0.6 0.0
+"diffuse_factor" 0.8
+"displacementDistance" 0.001
+"doubleSided" on
+"luminousIntensity" 0
+"mtl_ior" 1.35
+"num_cols" 2
+"reflectivity" 0.001
+"refractionRoughness" 0
+"roughness" 0.02
+"specular_color" 1.0 0.61 0.0
+"specular_factor" 0.1
+"swP2M" on
+"sw_shader" generictwocolor
+"transparency" 0.2
