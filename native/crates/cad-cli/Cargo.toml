@@ -1,0 +1,15 @@
+[package]
+name = "cad-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command line for the CAD converter"
+
+[[bin]]
+name = "cadconvert"
+path = "src/main.rs"
+
+[dependencies]
+cad-convert.workspace = true
+cad-tess.workspace = true
+cad-ir.workspace = true
