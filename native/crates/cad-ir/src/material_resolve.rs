@@ -658,16 +658,16 @@ pub fn attach_appearance_textures(scene: &mut Scene) -> Vec<String> {
         // `raw` is an appearance path only when the appearance library
         // answered; a .sldmat name reaches `get` and finds nothing, which is
         // the check rather than an extra flag on the material.
-        let (colour, normal, tile, strength, own_colour) = (
+        let (colour, normal, tile, strength) = (
             appearance.colour_texture.clone(),
             appearance.normal_texture.clone(),
             appearance.tile_metres,
             appearance.bump_strength,
-            appearance.colour,
         );
         let name = raw.clone();
 
         let mut textures = crate::material::Textures::default();
+        let mut colour_path = None;
         for (path, slot) in [(colour, true), (normal, false)] {
             let Some(path) = path else { continue };
             let Some(bytes) = crate::p2m::bundled_texture(&path) else {
@@ -680,6 +680,7 @@ pub fn attach_appearance_textures(scene: &mut Scene) -> Vec<String> {
                     let id = scene.add_image(image);
                     if slot {
                         textures.base_colour = Some(id);
+                        colour_path = Some(path.clone());
                     } else {
                         textures.normal = Some(id);
                     }
@@ -696,29 +697,29 @@ pub fn attach_appearance_textures(scene: &mut Scene) -> Vec<String> {
         // authored is meant to be seen.
         textures.set_normal_scale(if strength > 0.0 { 1.0 } else { 0.0 });
 
-        // A colour image carries the appearance's own colour baked into it,
-        // and multiplying the part's colour by it applies that level twice.
+        // A colour image carries the appearance's own colour baked into it —
+        // powdercoat_dark.jpg has a linear mean of 0.1830 and `dark
+        // powdercoat` states col1 0.1843, the same number — so multiplying a
+        // part's colour by it applies that level twice.
         //
-        // The measurement that settles it: powdercoat_dark.jpg has a linear
-        // mean of 0.1830 and `dark powdercoat` states col1 0.1843. The same
-        // number. The image is the colour times a grain whose mean is one, so
-        // dividing by col1 leaves the grain and nothing else — and the part
-        // keeps the colour its own file gave it, which is the one thing here
-        // that was checked body by body against another kernel.
+        // Dividing the *colour* by that level was the first answer and it was
+        // wrong, because glTF's base colour factor stops at one. The pilot's
+        // dominant paint needed 1.12 and its blue needed 2.44; both clamped,
+        // and 45% of the model came out white. The render hid it, since the
+        // image multiplied the level straight back — but the material said
+        // white, and any reader that ignores textures showed white.
         //
-        // No image is decoded to find this out. The appearance states it.
-        if textures.base_colour.is_some() {
-            if let Some(level) = own_colour {
+        // So the level comes out of the *image*, once and offline, by
+        // tools/make_grain.py. What is shipped is the grain alone, and what is
+        // left here is putting back the little it lost to clipping: 0.905 for
+        // the powder coat, a tenth of a stop. Every colour the pilot carries
+        // is well under that.
+        if let Some(path) = colour_path.as_deref() {
+            let level = crate::p2m::bundled_texture_level(path);
+            if level > 1e-4 {
                 let base = &mut scene.materials[index].base_color;
-                for k in 0..3 {
-                    if level[k] > 1e-4 {
-                        // Above one there is nowhere left to go: glTF's base
-                        // colour factor stops at one, so a part brighter than
-                        // the grain's own level still comes out darker than it
-                        // should. Every painted body in the pilot is well
-                        // under it.
-                        base[k] = (base[k] / level[k]).min(1.0);
-                    }
+                for c in base.iter_mut() {
+                    *c = (*c / level).min(1.0);
                 }
             }
         }
@@ -1023,48 +1024,76 @@ mod texture_tests {
     }
 
     #[test]
-    fn the_appearances_own_level_is_divided_out_of_the_parts_colour() {
-        // The image is the appearance's colour times a grain of mean one, so
-        // multiplying the part's colour by it as-is applies the level twice
-        // and the part comes out five times too dark. Measured on the pilot:
-        // the render's mean luminance fell from 82.1 to 63.6.
+    fn what_the_image_lost_to_clipping_is_put_back_and_no_more() {
+        // The shipped image is the grain alone — its level was divided out
+        // offline by tools/make_grain.py — so the colour needs only the little
+        // the grain lost when it was clipped at one. 0.905 for the powder
+        // coat, a tenth of a stop.
+        //
+        // Dividing by the appearance's whole level was the first answer and it
+        // was wrong: glTF's base colour factor stops at one, the pilot's
+        // dominant paint needed 1.12 and its blue needed 2.44, and 45% of the
+        // model came out white.
         let mut scene = Scene::default();
-        let colour = [0.0908, 0.0908, 0.0908];
+        let colour = [0.216, 0.216, 0.216]; // #808080, the pilot's dominant paint
         scene.add_material(painted(colour));
         attach_appearance_textures(&mut scene);
 
         let m = &scene.materials[0];
-        if m.textures.base_colour.is_none() {
+        let Some(id) = m.textures.base_colour else {
             return; // no image tree on this machine; build.rs said so
-        }
-        let level = crate::p2m::AppearanceLibrary::bundled()
-            .get("painted/powder coat/dark powdercoat")
-            .unwrap()
-            .colour
-            .unwrap();
+        };
+        let path = &scene.images[id.index()].name;
+        let level = crate::p2m::bundled_texture_level(path);
+        assert!(level > 0.8, "the grain kept most of itself: {level}");
+
         for k in 0..3 {
-            let expected = colour[k] / level[k];
+            let expected = colour[k] / level;
             assert!(
                 (m.base_color[k] - expected).abs() < 1e-6,
                 "channel {k}: {} vs {expected}",
                 m.base_color[k]
             );
-        }
-        // What a renderer multiplies out is the colour the file gave.
-        for k in 0..3 {
-            assert!((m.base_color[k] * level[k] - colour[k]).abs() < 1e-6);
+            // And nothing was clamped away.
+            assert!(m.base_color[k] < 1.0, "channel {k} saturated");
         }
     }
 
     #[test]
-    fn a_colour_brighter_than_the_grain_stops_at_one_rather_than_overflowing() {
-        // glTF's base colour factor has nowhere above one to go. Such a part
-        // still comes out darker than it should; nothing in the pilot is.
-        let mut scene = Scene::default();
-        scene.add_material(painted([0.9, 0.9, 0.9]));
-        attach_appearance_textures(&mut scene);
-        let m = &scene.materials[0];
-        assert!(m.base_color.iter().all(|&c| (0.0..=1.0).contains(&c)));
+    fn the_colours_the_pilot_carries_all_survive() {
+        // Every painted colour in the pilot assembly, including the one that
+        // used to clamp to white and the blue that used to lose its hue.
+        let colours: [[f32; 3]; 4] = [
+            [0.216, 0.216, 0.216],       // #808080
+            [0.220, 0.246, 0.262],       // #81888C
+            [0.091, 0.091, 0.091],       // #555555
+            [0.000, 0.033, 0.497],       // #0033BB
+        ];
+        for colour in colours {
+            let mut scene = Scene::default();
+            scene.add_material(painted(colour));
+            attach_appearance_textures(&mut scene);
+            let m = &scene.materials[0];
+            if m.textures.base_colour.is_none() {
+                return;
+            }
+            for k in 0..3 {
+                assert!(
+                    m.base_color[k] < 1.0,
+                    "{colour:?} channel {k} saturated at {}",
+                    m.base_color[k]
+                );
+                // Within a tenth of a stop of what the file said. A channel
+                // the file set to zero stays zero: the blue paint has no red
+                // in it and dividing by the grain does not invent any.
+                assert!(
+                    m.base_color[k] >= colour[k]
+                        && m.base_color[k] <= colour[k] * 1.15 + 1e-6,
+                    "{colour:?} channel {k} became {}",
+                    m.base_color[k]
+                );
+            }
+        }
     }
 
     #[test]

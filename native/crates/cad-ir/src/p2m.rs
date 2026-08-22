@@ -55,8 +55,22 @@ include!(concat!(env!("OUT_DIR"), "/textures.rs"));
 pub fn bundled_texture(path: &str) -> Option<&'static [u8]> {
     BUNDLED_TEXTURES
         .iter()
-        .find(|(key, _)| *key == path)
-        .map(|(_, bytes)| *bytes)
+        .find(|(key, _, _)| *key == path)
+        .map(|(_, bytes, _)| *bytes)
+}
+
+/// What a bundled colour image averages, so a caller can put the level back.
+///
+/// One for an image carried as it was. Less for a grain whose level was
+/// divided out and then clipped — 0.905 for the powder coat, because a grain
+/// runs above its own mean as often as below and there is nowhere above one
+/// for it to go.
+pub fn bundled_texture_level(path: &str) -> f32 {
+    BUNDLED_TEXTURES
+        .iter()
+        .find(|(key, _, _)| *key == path)
+        .map(|(_, _, level)| *level)
+        .unwrap_or(1.0)
 }
 
 /// A surface finish as the appearance library states it.

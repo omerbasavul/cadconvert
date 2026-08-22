@@ -16,6 +16,11 @@ out/
 native/crates/cad-ir/assets/Images/
 native/crates/cad-ir/assets/**/*.jpg
 native/crates/cad-ir/assets/**/*.png
+# Except the grains, which are ours: a colour image with the appearance's own
+# level divided out, prepared by tools/make_grain.py. They are what the
+# converter actually ships, they are small, and without them in the repository
+# a build anywhere but this machine has no textures at all.
+!native/crates/cad-ir/assets/generated/*.png
 native/crates/cad-ir/assets/**/*.dds
 native/crates/cad-ir/assets/**/*.hdr
 native/crates/cad-ir/assets/**/*.bmp
