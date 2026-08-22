@@ -33,9 +33,9 @@
        prevent. Naming from the RID makes the mismatch impossible, and the
        check below makes it loud. -->
   <PropertyGroup>
-    <NativeLibraryName Condition="$(NativeRid.StartsWith('win'))">cadconvert.dll</NativeLibraryName>
-    <NativeLibraryName Condition="$(NativeRid.StartsWith('osx'))">libcadconvert.dylib</NativeLibraryName>
-    <NativeLibraryName Condition="$(NativeRid.StartsWith('linux'))">libcadconvert.so</NativeLibraryName>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('win'))">cadconvert_native.dll</NativeLibraryName>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('osx'))">libcadconvert_native.dylib</NativeLibraryName>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('linux'))">libcadconvert_native.so</NativeLibraryName>
   </PropertyGroup>
 
   <PropertyGroup>

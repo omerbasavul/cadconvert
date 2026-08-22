@@ -35,7 +35,7 @@ cad-tess     cad-ir → watertight triangles
 cad-export   cad-ir → GLB / OBJ / USDZ
 cad-convert  read → tessellate → write, in one call
 cad-cli      cadconvert
-cad-ffi      libcadconvert, a C ABI over cad-convert
+cad-ffi      libcadconvert_native, a C ABI over cad-convert
 ```
 
 ## What the code holds itself to

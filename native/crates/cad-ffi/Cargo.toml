@@ -6,7 +6,12 @@ license.workspace = true
 description = "C ABI for the CAD converter, for P/Invoke and other foreign callers"
 
 [lib]
-name = "cadconvert"
+# Not "cadconvert". On Windows that builds cadconvert.dll, and the .NET package
+# beside it is CadConvert.dll — the same name to a case-insensitive filesystem.
+# Copying the native library next to the managed one then overwrote it, and
+# every test died on "Could not load file or assembly 'CadConvert'". Linux and
+# macOS never saw it: there the file is libcadconvert.so.
+name = "cadconvert_native"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]

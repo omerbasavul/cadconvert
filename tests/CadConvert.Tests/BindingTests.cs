@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Xunit;
 
 namespace CadConvert.Tests
@@ -17,6 +18,42 @@ namespace CadConvert.Tests
 
             Assert.False(string.IsNullOrWhiteSpace(version));
             Assert.Matches(@"^\d+\.\d+\.\d+", version);
+        }
+
+        [Fact]
+        public void TheNativeLibraryCannotBeMistakenForThisAssembly()
+        {
+            // The native library sits in this directory beside the managed one.
+            // Windows does not distinguish cadconvert.dll from CadConvert.dll,
+            // so when the native library was called "cadconvert" the copy that
+            // put it here overwrote the assembly this test is running from, and
+            // all 26 tests died on "Could not load file or assembly". The two
+            // unix runtimes never saw it — libcadconvert.so collides with
+            // nothing — so it survived every local run and appeared at the
+            // first push.
+            //
+            // This runs everywhere and fails everywhere, which is the point.
+            var managed = Path.GetFileNameWithoutExtension(
+                typeof(CadConverter).Assembly.Location);
+
+            foreach (string native in Directory.GetFiles(AppContext.BaseDirectory)
+                         .Where(f => f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                                     || f.EndsWith(".so", StringComparison.OrdinalIgnoreCase)
+                                     || f.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase))
+                         .Where(f => Path.GetFileName(f).Contains("cadconvert",
+                                     StringComparison.OrdinalIgnoreCase))
+                         .Select(Path.GetFileNameWithoutExtension)
+                         .Where(f => !string.Equals(f, managed, StringComparison.Ordinal)))
+            {
+                string bare = native.StartsWith("lib", StringComparison.Ordinal)
+                    ? native.Substring(3)
+                    : native;
+
+                Assert.False(
+                    string.Equals(bare, managed, StringComparison.OrdinalIgnoreCase),
+                    $"'{native}' and '{managed}' are the same file name on a "
+                    + "case-insensitive filesystem, and they share a directory.");
+            }
         }
 
         [Fact]

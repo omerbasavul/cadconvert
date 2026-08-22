@@ -67,11 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert.so }
-          - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert.so }
-          - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert.dylib }
-          - { rid: osx-x64,     os: macos-13,         lib: libcadconvert.dylib }
-          - { rid: win-x64,     os: windows-latest,   lib: cadconvert.dll }
+          - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert_native.so }
+          - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert_native.so }
+          - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert_native.dylib }
+          - { rid: osx-x64,     os: macos-13,         lib: libcadconvert_native.dylib }
+          - { rid: win-x64,     os: windows-latest,   lib: cadconvert_native.dll }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -124,7 +124,7 @@ jobs:
           }
           C
           cc -I native/crates/cad-ffi/include -o /tmp/abi_check /tmp/abi_check.c \
-             -L native/target/release -lcadconvert -Wl,-rpath,"$PWD/native/target/release"
+             -L native/target/release -lcadconvert_native -Wl,-rpath,"$PWD/native/target/release"
           /tmp/abi_check
 
       - uses: actions/upload-artifact@v4
@@ -166,8 +166,8 @@ jobs:
           path: staged
 
       # `download-artifact` gives one directory per artifact, named after it —
-      # `staged/runtime-linux-x64/libcadconvert.so`. The package wants
-      # `runtimes/linux-x64/native/libcadconvert.so`.
+      # `staged/runtime-linux-x64/libcadconvert_native.so`. The package wants
+      # `runtimes/linux-x64/native/libcadconvert_native.so`.
       - name: put them where the package looks
         run: |
           set -euo pipefail

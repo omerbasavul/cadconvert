@@ -163,7 +163,11 @@ namespace CadConvert
         private static class Native
         {
             public const int Ok = 0;
-            private const string Library = "cadconvert";
+            // The file, not the package: cadconvert_native.dll,
+            // libcadconvert_native.so, libcadconvert_native.dylib. The suffix
+            // keeps it from colliding with this assembly, CadConvert.dll, on a
+            // filesystem that does not distinguish the two.
+            private const string Library = "cadconvert_native";
 
             [StructLayout(LayoutKind.Sequential)]
             public struct Options

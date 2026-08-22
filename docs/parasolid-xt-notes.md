@@ -3786,7 +3786,7 @@ cad-tess    cad-ir → mesh          → cad-ir
 cad-export  cad-ir → GLB/OBJ/USDZ  → cad-ir
 cad-convert read → tessellate → write, in one call   ← the only thing to wrap
 cad-cli     `cadconvert`, a binary over it
-cad-ffi     `libcadconvert`, cdylib + staticlib, C ABI + include/cadconvert.h
+cad-ffi     `libcadconvert_native`, cdylib + staticlib, C ABI + include/cadconvert.h
 dotnet/     CadConvert, netstandard2.0, P/Invoke over that
 ```
 
