@@ -1,20 +1,34 @@
-# The SolidWorks libraries are carried verbatim, CRLF and all: they are data
-# this project reads, not source it edits, and the parsers are written against
-# the bytes SolidWorks writes.
-*.p2m -text
+# Line endings.
+# ============================================================================
+# The last matching line wins, so the catch-all goes first and the exceptions
+# after it. Written the other way round the exceptions are silently overridden,
+# which is what happened here: the two rules below said "verbatim" while
+# `git check-attr` said `text: auto`.
+
+# Source is normalised on the way in, so a checkout on Windows and one on Linux
+# hold the same bytes.
+* text=auto
+*.sh text eol=lf
+
+# Data this project reads, not source it edits. Carried byte for byte.
+#
+# The SolidWorks libraries because the parsers are written against the bytes
+# SolidWorks writes — CRLF and all — and because one of them is checked against
+# a published copy, which only means anything if it is unaltered.
+*.p2m   -text
 *.sldmat -text
 
-# Everything else is normalised on the way in, so a checkout on Windows and one
-# on Linux hold the same bytes.
-* text=auto
-*.rs text
-*.cs text
-*.csproj text
-*.slnx text
-*.props text
-*.targets text
-*.md text
-*.yml text
-*.toml text
-*.h text
-*.sh text eol=lf
+# The CAD samples because the tests read them at fixed byte offsets: truncating
+# at 1024 bytes and flipping the byte at 700 say nothing about a file whose
+# every newline grew by one on the way out of the repository.
+*.x_t     -text
+*.xmt_txt -text
+*.stp     -text
+*.step    -text
+*.p21     -text
+
+# Binary, and never worth a diff.
+*.glb  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
