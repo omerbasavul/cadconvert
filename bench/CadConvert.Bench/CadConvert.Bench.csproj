@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Only where the native library is; the project reference builds it. -->
-  <Import Project="$(MSBuildThisFileDirectory)../../build/Native.props" />
+  <!-- Builds the library first (via the project reference below) and puts it
+       beside this project's output, so the P/Invoke resolves. -->
+  <Import Project="$(MSBuildThisFileDirectory)../../build/NativeConsumer.targets" />
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -13,10 +14,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/CadConvert/CadConvert.csproj" />
-    <None Include="$(NativeLibraryStaged)"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(NativeLibraryStaged)')" />
   </ItemGroup>
 
 </Project>

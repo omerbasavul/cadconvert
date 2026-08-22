@@ -1,0 +1,32 @@
+<!-- Putting the native library beside an executable that P/Invokes it.
+     ================================================================
+     For the projects that *use* the library rather than build it: the test
+     suite and the benchmark. A project reference to src/CadConvert makes the
+     library build and stage first; this copies the staged file into the output
+     directory, because a project reference carries managed assemblies and
+     knows nothing about `runtimes/{rid}/native`. Only the NuGet package has
+     that layout, and only the .NET host reading a package probes it.
+
+     Why a target rather than a `None` item with `Condition="Exists(...)"`,
+     which is what this was: `Exists` on an item is answered during evaluation,
+     and evaluation happens before anything is built. In a working tree that
+     has built before, the file is there and the item appears. In a fresh
+     clone it is not, the item never appears, the library is never copied, and
+     the build succeeds — the failure arrives later as a DllNotFoundException
+     from the first test. Which is precisely the silent-until-runtime failure
+     the rest of this build glue exists to prevent, reintroduced by a
+     condition that looked like a safety check. A target runs after the
+     staging, so it sees the truth. -->
+<Project>
+
+  <Import Project="$(MSBuildThisFileDirectory)Native.props" />
+
+  <Target Name="CopyNativeLibraryBesideOutput" AfterTargets="Build">
+    <Error Condition="!Exists('$(NativeLibraryStaged)')"
+           Text="$(NativeLibraryStaged) is not there, so $(MSBuildProjectName) would fail at its first P/Invoke. The library project should have staged it; build the solution rather than this project alone." />
+    <Copy SourceFiles="$(NativeLibraryStaged)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

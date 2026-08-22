@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Only where the library is, not how to build it: the project reference
-       below makes the library project build and stage it first. -->
-  <Import Project="$(MSBuildThisFileDirectory)../../build/Native.props" />
+  <!-- Builds the library first (via the project reference below) and puts it
+       beside this project's output, so the P/Invoke resolves. -->
+  <Import Project="$(MSBuildThisFileDirectory)../../build/NativeConsumer.targets" />
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -18,14 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/CadConvert/CadConvert.csproj" />
-    <!-- A project reference does not carry a NuGet package's runtimes/ layout,
-         so this machine's own native library is put beside the executable. The
-         package itself ships every runtime under runtimes/{rid}/native, which
-         is what the .NET host probes. -->
-    <None Include="$(NativeLibraryStaged)"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(NativeLibraryStaged)')" />
     <!-- One sample, shared with the Rust robustness test rather than copied,
          so the two sides can never drift on to different bytes. -->
     <None Include="../../native/crates/cad-convert/tests/samples/small.x_t"
