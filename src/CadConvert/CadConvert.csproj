@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="$(MSBuildThisFileDirectory)../../build/Native.targets" />
+
+  <PropertyGroup>
+    <!-- netstandard2.0 reaches .NET Framework 4.6.1 and everything after it,
+         which is what a CAD plug-in host is likely to be. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <PackageId>CadConvert</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>omerbasavul</Authors>
+    <Description>Parasolid (.x_t) and STEP (.stp) to glTF binary. Reads the B-Rep, tessellates it, and writes a glTF 2.0 file with materials.</Description>
+    <PackageTags>cad;parasolid;step;gltf;glb;mesh;tessellation</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+  </PropertyGroup>
+
+  <!-- The native library, one per runtime identifier.
+       `PackagePath="runtimes"` is a directory, and pack appends each file's
+       own `osx-arm64/native/` under it. Spelling that out as
+       `runtimes/%(RecursiveDir)` doubles it, and the .NET host — which probes
+       `runtimes/{rid}/native` — then finds nothing, silently, at the first
+       P/Invoke. The first version of this glob pointed one directory too high
+       and packed nothing at all, which fails the same silent way.
+       A build machine has whichever runtime it can compile; the others come
+       from the CI matrix and are dropped into the same tree before packing. -->
+  <PropertyGroup>
+    <NativeRuntimesDir>$(RuntimesRoot)</NativeRuntimesDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    <None Include="$(NativeRuntimesDir)**/native/*"
+          Pack="true"
+          PackagePath="runtimes"
+          Visible="false" />
+  </ItemGroup>
+
+  <Target Name="SayWhichRuntimesArePacked" BeforeTargets="Pack">
+    <Message Importance="high" Text="cadconvert native runtimes packed: @(None->'%(RecursiveDir)', ' ')" />
+    <Warning Condition="'@(None)' == ''"
+             Text="No native cadconvert library found under $(NativeRuntimesDir). The package will build and every call will fail at load time." />
+  </Target>
+
+</Project>

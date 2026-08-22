@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Only where the native library is; the project reference builds it. -->
+  <Import Project="$(MSBuildThisFileDirectory)../../build/Native.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>bench</AssemblyName>
+    <RootNamespace>CadConvert.Bench</RootNamespace>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/CadConvert/CadConvert.csproj" />
+    <None Include="$(NativeLibraryStaged)"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(NativeLibraryStaged)')" />
+  </ItemGroup>
+
+</Project>
