@@ -203,11 +203,8 @@ mod sample_tests {
     //! check that covers both stream dialects and four modeller generations.
     //! Point `XT_SAMPLES` at a directory of `.x_t` files to run them.
 
-    const DEFAULT_SAMPLES: &str = "/Users/omerbasavul/Downloads/3D Model bütün dosya formatları";
-
     fn sample_dir() -> Option<std::path::PathBuf> {
-        let dir = std::env::var("XT_SAMPLES").unwrap_or_else(|_| DEFAULT_SAMPLES.to_string());
-        let path = std::path::PathBuf::from(dir);
+        let path = std::path::PathBuf::from(std::env::var("XT_SAMPLES").ok()?);
         path.is_dir().then_some(path)
     }
 

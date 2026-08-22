@@ -158,10 +158,14 @@ pub fn hints_from_entities(entities: &[RawEntity]) -> AppearanceHints {
 mod tests {
     use super::*;
 
-    const SAMPLES: &str = "/Users/omerbasavul/Downloads/3D Model bütün dosya formatları";
-
+    /// The parts these read are not in the repository — they are real exports,
+    /// too large and not ours to publish. Point `XT_SAMPLES` at a directory of
+    /// them to run these; without it they skip.
     fn load(name: &str) -> Option<AppearanceHints> {
-        let dir = std::env::var("XT_SAMPLES").unwrap_or_else(|_| SAMPLES.to_string());
+        let Ok(dir) = std::env::var("XT_SAMPLES") else {
+            eprintln!("XT_SAMPLES unset; skipping {name}");
+            return None;
+        };
         let path = std::path::Path::new(&dir).join(name);
         if !path.exists() {
             eprintln!("sample {name} absent; skipping");
