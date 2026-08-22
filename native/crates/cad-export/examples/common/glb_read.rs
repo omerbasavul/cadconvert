@@ -13,14 +13,33 @@
 pub fn open(
     bytes: &[u8],
 ) -> Result<(gltf::Document, Vec<gltf::buffer::Data>), Box<dyn std::error::Error>> {
+    open_with_images(bytes).map(|(doc, buffers, _)| (doc, buffers))
+}
+
+/// The document, its buffers, and its decoded images.
+///
+/// `import_slice` refuses anything whose `extensionsRequired` it does not
+/// implement, and this project writes `KHR_mesh_quantization` there because a
+/// viewer that ignores quantisation draws nonsense. So the fallback is the
+/// path that actually runs for our own files — and it has to import the images
+/// too. It did not, which is why the first textured render came out
+/// byte-identical to the untextured one: the images were silently an empty
+/// list, and every material sampled nothing.
+pub fn open_with_images(
+    bytes: &[u8],
+) -> Result<
+    (gltf::Document, Vec<gltf::buffer::Data>, Vec<gltf::image::Data>),
+    Box<dyn std::error::Error>,
+> {
     match gltf::import_slice(bytes) {
-        Ok((doc, buffers, _)) => Ok((doc, buffers)),
+        Ok((doc, buffers, images)) => Ok((doc, buffers, images)),
         Err(_) => {
             let file = gltf::Gltf::from_slice_without_validation(bytes)?;
             let blob = file.blob.clone();
             let doc = file.document;
             let buffers = gltf::import_buffers(&doc, None, blob)?;
-            Ok((doc, buffers))
+            let images = gltf::import_images(&doc, None, &buffers).unwrap_or_default();
+            Ok((doc, buffers, images))
         }
     }
 }

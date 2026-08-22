@@ -18,7 +18,8 @@
 //! Inference is a heuristic and is therefore both overridable per colour in
 //! the table and disableable wholesale.
 
-use crate::material::{Material, MaterialClass};
+use crate::material::{Material, MaterialClass, MaterialSource};
+use crate::scene::Scene;
 use std::collections::HashMap;
 
 impl MaterialClass {
@@ -632,6 +633,101 @@ fn class_slug(class: MaterialClass) -> &'static str {
     }
 }
 
+/// Give every material that names an appearance the images that appearance
+/// names, loading each one once into the scene.
+///
+/// Run after the materials are settled and before the writers see them. It is
+/// separate from resolving because resolving produces a [`Material`] and this
+/// needs a [`Scene`] to put images in; threading one through the other only to
+/// reach here would have every caller carrying a scene it does not use.
+///
+/// Returns whatever could not be loaded, by name. A finish whose image is
+/// missing or unreadable converts without it — the colour and the roughness
+/// are still the appearance's own — so these are warnings, not failures.
+pub fn attach_appearance_textures(scene: &mut Scene) -> Vec<String> {
+    let library = crate::p2m::AppearanceLibrary::bundled();
+    let mut warnings = Vec::new();
+
+    for index in 0..scene.materials.len() {
+        let MaterialSource::Named { raw, .. } = &scene.materials[index].source else {
+            continue;
+        };
+        let Some(appearance) = library.get(raw) else {
+            continue;
+        };
+        // `raw` is an appearance path only when the appearance library
+        // answered; a .sldmat name reaches `get` and finds nothing, which is
+        // the check rather than an extra flag on the material.
+        let (colour, normal, tile, strength, own_colour) = (
+            appearance.colour_texture.clone(),
+            appearance.normal_texture.clone(),
+            appearance.tile_metres,
+            appearance.bump_strength,
+            appearance.colour,
+        );
+        let name = raw.clone();
+
+        let mut textures = crate::material::Textures::default();
+        for (path, slot) in [(colour, true), (normal, false)] {
+            let Some(path) = path else { continue };
+            let Some(bytes) = crate::p2m::bundled_texture(&path) else {
+                // Not embedded. Expected for most of the library; only the
+                // finishes the resolver can reach carry their images.
+                continue;
+            };
+            match crate::image::load(&path, bytes) {
+                Ok(image) => {
+                    let id = scene.add_image(image);
+                    if slot {
+                        textures.base_colour = Some(id);
+                    } else {
+                        textures.normal = Some(id);
+                    }
+                }
+                Err(e) => warnings.push(format!("{name}: {path}: {e}")),
+            }
+        }
+
+        // `initTextureWidth` is metres and the models are millimetres.
+        textures.set_tile_mm(tile.map(|[w, h]| [(w * 1000.0) as f32, (h * 1000.0) as f32]));
+        // `bumpStrength` is a relief depth in metres, not glTF's normal scale,
+        // and the library states 0.001 for almost everything. Treated as
+        // full strength unless the file says less: a normal map that has been
+        // authored is meant to be seen.
+        textures.set_normal_scale(if strength > 0.0 { 1.0 } else { 0.0 });
+
+        // A colour image carries the appearance's own colour baked into it,
+        // and multiplying the part's colour by it applies that level twice.
+        //
+        // The measurement that settles it: powdercoat_dark.jpg has a linear
+        // mean of 0.1830 and `dark powdercoat` states col1 0.1843. The same
+        // number. The image is the colour times a grain whose mean is one, so
+        // dividing by col1 leaves the grain and nothing else — and the part
+        // keeps the colour its own file gave it, which is the one thing here
+        // that was checked body by body against another kernel.
+        //
+        // No image is decoded to find this out. The appearance states it.
+        if textures.base_colour.is_some() {
+            if let Some(level) = own_colour {
+                let base = &mut scene.materials[index].base_color;
+                for k in 0..3 {
+                    if level[k] > 1e-4 {
+                        // Above one there is nowhere left to go: glTF's base
+                        // colour factor stops at one, so a part brighter than
+                        // the grain's own level still comes out darker than it
+                        // should. Every painted body in the pilot is well
+                        // under it.
+                        base[k] = (base[k] / level[k]).min(1.0);
+                    }
+                }
+            }
+        }
+
+        scene.materials[index].textures = textures;
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -907,5 +1003,90 @@ mod tests {
         let m = MaterialResolver::default().resolve("x", Some(c));
         assert!((m.alpha - 0.4).abs() < 1e-6);
         assert!(m.is_transparent());
+    }
+}
+
+#[cfg(test)]
+mod texture_tests {
+    use super::*;
+    use crate::scene::Scene;
+
+    /// A material as the resolver leaves it: the appearance's finish, the
+    /// file's own colour.
+    fn painted(base: [f32; 3]) -> Material {
+        let lib = crate::p2m::AppearanceLibrary::bundled();
+        let appearance = lib.get("painted/powder coat/dark powdercoat").unwrap();
+        Material {
+            base_color: base,
+            ..appearance.to_material("paint")
+        }
+    }
+
+    #[test]
+    fn the_appearances_own_level_is_divided_out_of_the_parts_colour() {
+        // The image is the appearance's colour times a grain of mean one, so
+        // multiplying the part's colour by it as-is applies the level twice
+        // and the part comes out five times too dark. Measured on the pilot:
+        // the render's mean luminance fell from 82.1 to 63.6.
+        let mut scene = Scene::default();
+        let colour = [0.0908, 0.0908, 0.0908];
+        scene.add_material(painted(colour));
+        attach_appearance_textures(&mut scene);
+
+        let m = &scene.materials[0];
+        if m.textures.base_colour.is_none() {
+            return; // no image tree on this machine; build.rs said so
+        }
+        let level = crate::p2m::AppearanceLibrary::bundled()
+            .get("painted/powder coat/dark powdercoat")
+            .unwrap()
+            .colour
+            .unwrap();
+        for k in 0..3 {
+            let expected = colour[k] / level[k];
+            assert!(
+                (m.base_color[k] - expected).abs() < 1e-6,
+                "channel {k}: {} vs {expected}",
+                m.base_color[k]
+            );
+        }
+        // What a renderer multiplies out is the colour the file gave.
+        for k in 0..3 {
+            assert!((m.base_color[k] * level[k] - colour[k]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_colour_brighter_than_the_grain_stops_at_one_rather_than_overflowing() {
+        // glTF's base colour factor has nowhere above one to go. Such a part
+        // still comes out darker than it should; nothing in the pilot is.
+        let mut scene = Scene::default();
+        scene.add_material(painted([0.9, 0.9, 0.9]));
+        attach_appearance_textures(&mut scene);
+        let m = &scene.materials[0];
+        assert!(m.base_color.iter().all(|&c| (0.0..=1.0).contains(&c)));
+    }
+
+    #[test]
+    fn a_material_with_no_appearance_is_left_exactly_as_it_was() {
+        let mut scene = Scene::default();
+        let steel = Material::from_class(MaterialClass::Steel, "steel");
+        scene.add_material(steel.clone());
+        let warnings = attach_appearance_textures(&mut scene);
+        assert!(warnings.is_empty());
+        assert_eq!(scene.materials[0].base_color, steel.base_color);
+        assert!(scene.materials[0].textures.is_empty());
+        assert!(scene.images.is_empty());
+    }
+
+    #[test]
+    fn the_tile_size_arrives_in_millimetres() {
+        let mut scene = Scene::default();
+        scene.add_material(painted([0.1; 3]));
+        attach_appearance_textures(&mut scene);
+        if let Some([w, h]) = scene.materials[0].textures.tile_mm() {
+            // 0.00635 m as stated by the file.
+            assert!((w - 6.35).abs() < 1e-3 && (h - 6.35).abs() < 1e-3, "{w} x {h}");
+        }
     }
 }

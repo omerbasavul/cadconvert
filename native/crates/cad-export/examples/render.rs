@@ -21,16 +21,80 @@ use std::io::Write;
 type V3 = [f64; 3];
 
 /// One triangle with the appearance its file gave it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Tri {
     at: [V3; 3],
     base: [f64; 3],
     metallic: f64,
     roughness: f64,
+    /// Texture coordinates, already multiplied by the material's tile scale,
+    /// so one unit is one repeat.
+    uv: Option<[[f64; 2]; 3]>,
+    /// The material's images, decoded once and shared.
+    maps: Option<std::rc::Rc<Maps>>,
+}
+
+/// A material's decoded images. One per material, not per triangle.
+struct Maps {
+    colour: Option<Bitmap>,
+    normal: Option<Bitmap>,
+    normal_scale: f64,
+}
+
+struct Bitmap {
+    width: usize,
+    height: usize,
+    /// RGB, 0..1, linear for a colour map and raw for a normal map.
+    texels: Vec<[f64; 3]>,
+}
+
+impl Bitmap {
+    /// Nearest-neighbour, wrapping. Nearest rather than bilinear on purpose:
+    /// this is here to show whether the grain is present and the right size,
+    /// and smoothing it would hide exactly that.
+    fn at(&self, u: f64, v: f64) -> [f64; 3] {
+        let wrap = |x: f64, n: usize| -> usize {
+            let n = n.max(1);
+            let i = (x * n as f64).floor() as i64 % n as i64;
+            (if i < 0 { i + n as i64 } else { i }) as usize
+        };
+        self.texels[wrap(v, self.height) * self.width + wrap(u, self.width)]
+    }
 }
 
 /// The default look for a file that carries no materials, and for `--grey`.
 const PLAIN: ([f64; 3], f64, f64) = ([0.82, 0.84, 0.88], 0.0, 0.55);
+
+/// A glTF image as a bitmap. `srgb` for a colour map, which glTF stores
+/// gamma-encoded; a normal map is raw and must not be linearised.
+fn bitmap(data: &gltf::image::Data, srgb: bool) -> Option<Bitmap> {
+    use gltf::image::Format;
+    let channels = match data.format {
+        Format::R8G8B8 => 3,
+        Format::R8G8B8A8 => 4,
+        Format::R8 => 1,
+        Format::R8G8 => 2,
+        _ => return None,
+    };
+    let to_linear = |c: f64| {
+        if !srgb {
+            c
+        } else if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let texels = data
+        .pixels
+        .chunks_exact(channels)
+        .map(|p| {
+            let g = |i: usize| to_linear(p[i.min(channels - 1)] as f64 / 255.0);
+            if channels >= 3 { [g(0), g(1), g(2)] } else { [g(0); 3] }
+        })
+        .collect();
+    Some(Bitmap { width: data.width as usize, height: data.height as usize, texels })
+}
 
 fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
 fn cross(a: V3, b: V3) -> V3 {
@@ -200,25 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // That distinction is the whole point of recovering metal-or-not from
         // the file, so it is drawn rather than averaged away.
         let spec_power = 2.0 / (t.roughness.clamp(0.03, 1.0).powi(4)) - 2.0;
-        let mut rgb = [0.0f64; 3];
-        for (light, strength) in [(key, 1.0), (fill, 0.28)] {
-            let lambert = dot(n, light).max(0.0) * strength;
-            let half = norm([
-                light[0] + eye[0],
-                light[1] + eye[1],
-                light[2] + eye[2],
-            ]);
-            let spec = if lambert > 0.0 {
-                dot(n, half).max(0.0).powf(spec_power.clamp(1.0, 4096.0)) * strength
-            } else {
-                0.0
-            };
-            for k in 0..3 {
-                let diffuse = t.base[k] * lambert * (1.0 - t.metallic);
-                let tint = 0.04 + (t.base[k] - 0.04) * t.metallic;
-                rgb[k] += diffuse + tint * spec * 1.6;
-            }
-        }
+
         // Two punctual lights leave a metal black everywhere but its
         // highlight, because a metal has no diffuse term and there is nothing
         // for it to reflect. A real viewer supplies an environment; this one
@@ -235,19 +281,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 0.30 * (1.0 + up * 0.7)
             }
         };
-        let reflected = {
-            let c = 2.0 * dot(n, eye);
-            norm([n[0] * c - eye[0], n[1] * c - eye[1], n[2] * c - eye[2]])
-        };
-        // A rough metal gathers the sky from all around rather than mirroring
-        // it, so its reflection is pulled toward the average.
-        let gathered = sky(reflected) * (1.0 - t.roughness) + sky(n) * t.roughness;
-        for k in 0..3 {
-            // Metals reflect their own colour; a dielectric reflects white,
-            // faintly, and lights its body from the sky instead.
-            rgb[k] += t.metallic * t.base[k] * gathered * 1.25
-                + (1.0 - t.metallic) * (t.base[k] * sky(n) * 0.45 + gathered * 0.03);
-        }
         let encode = |v: f64| {
             // Reinhard, then sRGB: the highlights on a polished metal are far
             // brighter than white and clip to a flat disc without it.
@@ -255,7 +288,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let s = if m <= 0.0031308 { m * 12.92 } else { 1.055 * m.powf(1.0 / 2.4) - 0.055 };
             (s * 255.0).round() as u8
         };
-        let tint = [encode(rgb[0]), encode(rgb[1]), encode(rgb[2])];
+
+        // The whole shading, as a function of a normal and a base colour, so
+        // that a textured triangle can run it per pixel and an untextured one
+        // can run it once.
+        let shade = |n: V3, base: [f64; 3]| -> [u8; 3] {
+            let mut rgb = [0.0f64; 3];
+            for (light, strength) in [(key, 1.0), (fill, 0.28)] {
+                let lambert = dot(n, light).max(0.0) * strength;
+                let half = norm([
+                    light[0] + eye[0],
+                    light[1] + eye[1],
+                    light[2] + eye[2],
+                ]);
+                let spec = if lambert > 0.0 {
+                    dot(n, half).max(0.0).powf(spec_power.clamp(1.0, 4096.0)) * strength
+                } else {
+                    0.0
+                };
+                for k in 0..3 {
+                    let diffuse = base[k] * lambert * (1.0 - t.metallic);
+                    let tint = 0.04 + (base[k] - 0.04) * t.metallic;
+                    rgb[k] += diffuse + tint * spec * 1.6;
+                }
+            }
+            let reflected = {
+                let c = 2.0 * dot(n, eye);
+                norm([n[0] * c - eye[0], n[1] * c - eye[1], n[2] * c - eye[2]])
+            };
+            // A rough metal gathers the sky from all around rather than
+            // mirroring it, so its reflection is pulled toward the average.
+            let gathered = sky(reflected) * (1.0 - t.roughness) + sky(n) * t.roughness;
+            for k in 0..3 {
+                // Metals reflect their own colour; a dielectric reflects white,
+                // faintly, and lights its body from the sky instead.
+                rgb[k] += t.metallic * base[k] * gathered * 1.25
+                    + (1.0 - t.metallic) * (base[k] * sky(n) * 0.45 + gathered * 0.03);
+            }
+            [encode(rgb[0]), encode(rgb[1]), encode(rgb[2])]
+        };
+
+        // Sampled per pixel where there is anything to sample. It has to be:
+        // the tessellation is adaptive, so a flat cast face is a handful of
+        // very large triangles, and one sample each turns a 6.35 mm grain into
+        // blotches the size of the triangles. The first version of this did
+        // exactly that and the render looked like a fault in the mesh.
+        let textured = t.uv.is_some() && t.maps.is_some();
+        let tint = if textured { [0u8; 3] } else { shade(n, t.base) };
+
+
 
         let to_px = |q: V3| -> (f64, f64) {
             (
@@ -291,7 +372,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let i = y * args.width + x;
                 if z < depth[i] {
                     depth[i] = z;
-                    colour[i] = tint;
+                    colour[i] = if textured {
+                        let uv = t.uv.expect("checked above");
+                        let maps = t.maps.as_ref().expect("checked above");
+                        // w1 belongs to vertex a, w2 to b, w0 to c, the same
+                        // way the depth above is interpolated.
+                        let u = w1 * uv[0][0] + w2 * uv[1][0] + w0 * uv[2][0];
+                        let v = w1 * uv[0][1] + w2 * uv[1][1] + w0 * uv[2][1];
+
+                        let mut base = t.base;
+                        if let Some(map) = &maps.colour {
+                            let texel = map.at(u, v);
+                            for k in 0..3 {
+                                base[k] *= texel[k];
+                            }
+                        }
+                        let mut shaded = n;
+                        if let Some(map) = &maps.normal {
+                            // Tangent space without tangents: a basis built
+                            // from the face normal. The exporter's coordinates
+                            // come from an axis-aligned projection, so this
+                            // agrees with them up to a rotation within the
+                            // plane — enough to show the relief, not enough to
+                            // stand in for a viewer.
+                            let texel = map.at(u, v);
+                            let (tx, ty) = (
+                                (texel[0] * 2.0 - 1.0) * maps.normal_scale,
+                                (texel[1] * 2.0 - 1.0) * maps.normal_scale,
+                            );
+                            let up = if n[1].abs() < 0.9 {
+                                [0.0, 1.0, 0.0]
+                            } else {
+                                [1.0, 0.0, 0.0]
+                            };
+                            let tangent = norm(cross(up, n));
+                            let bitangent = cross(n, tangent);
+                            shaded = norm([
+                                n[0] + tangent[0] * tx + bitangent[0] * ty,
+                                n[1] + tangent[1] * tx + bitangent[1] * ty,
+                                n[2] + tangent[2] * tx + bitangent[2] * ty,
+                            ]);
+                        }
+                        shade(shaded, base)
+                    } else {
+                        tint
+                    };
                 }
             }
         }
@@ -311,16 +436,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_glb(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
-    let (doc, buffers) = glb_read::open(&bytes)?;
+    let (doc, buffers, images) = glb_read::open_with_images(&bytes)?;
+    // One entry per material, built lazily below.
+    let mut material_maps: Vec<Option<std::rc::Rc<Maps>>> = vec![None; doc.materials().len()];
+    for (index, material) in doc.materials().enumerate() {
+        let pbr = material.pbr_metallic_roughness();
+        let colour = pbr
+            .base_color_texture()
+            .and_then(|i| images.get(i.texture().source().index()))
+            .and_then(|d| bitmap(d, true));
+        let normal = material
+            .normal_texture()
+            .and_then(|i| images.get(i.texture().source().index()))
+            .and_then(|d| bitmap(d, false));
+        if colour.is_some() || normal.is_some() {
+            let scale = material.normal_texture().map_or(1.0, |i| i.scale() as f64);
+            material_maps[index] = Some(std::rc::Rc::new(Maps {
+                colour,
+                normal,
+                normal_scale: scale,
+            }));
+        }
+    }
+    let scales = texture_scales(&bytes);
     let mut out = Vec::new();
     let digits = |s: &str| s.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
     let want = part.map(digits);
 
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         node: &gltf::Node,
         parent: [[f32; 4]; 4],
         buffers: &[gltf::buffer::Data],
         want: &Option<String>,
+        maps: &[Option<std::rc::Rc<Maps>>],
+        scales: &[[f64; 2]],
         out: &mut Vec<Tri>,
     ) {
         let m = mat_mul(parent, node.transform().matrix());
@@ -343,12 +493,33 @@ fn load_glb(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::err
                     let metallic = pbr.metallic_factor() as f64;
                     let roughness = pbr.roughness_factor() as f64;
 
+                    // The tile scale lives in KHR_texture_transform, which the
+                    // reader does not expand, so it is taken from the JSON
+                    // that the material carries. Without it the grain is drawn
+                    // once across the whole part and the render says nothing.
+                    let tile = p
+                        .material()
+                        .index()
+                        .and_then(|i| scales.get(i).copied())
+                        .unwrap_or([1.0, 1.0]);
+                    let material_maps = p.material().index().and_then(|i| maps[i].clone());
+
                     let r = p.reader(|b| Some(&buffers[b.index()]));
                     let pos: Vec<[f32; 3]> =
                         glb_read::positions(&p, &buffers);
                     let world: Vec<V3> = pos.iter().map(|v| apply(m, *v)).collect();
+                    let uvs: Option<Vec<[f32; 2]>> = r
+                        .read_tex_coords(0)
+                        .map(|c| c.into_f32().collect());
                     if let Some(ix) = r.read_indices() {
                         for t in ix.into_u32().collect::<Vec<u32>>().chunks_exact(3) {
+                            let uv = uvs.as_ref().map(|u| {
+                                let g = |k: usize| {
+                                    let c = u[t[k] as usize];
+                                    [c[0] as f64 * tile[0], c[1] as f64 * tile[1]]
+                                };
+                                [g(0), g(1), g(2)]
+                            });
                             out.push(Tri {
                                 at: [
                                     world[t[0] as usize],
@@ -358,6 +529,8 @@ fn load_glb(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::err
                                 base,
                                 metallic,
                                 roughness,
+                                uv,
+                                maps: material_maps.clone(),
                             });
                         }
                     }
@@ -365,15 +538,44 @@ fn load_glb(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::err
             }
         }
         for child in node.children() {
-            walk(&child, m, buffers, want, out);
+            walk(&child, m, buffers, want, maps, scales, out);
         }
     }
     for scene in doc.scenes() {
         for node in scene.nodes() {
-            walk(&node, IDENTITY, &buffers, &want, &mut out);
+            walk(&node, IDENTITY, &buffers, &want, &material_maps, &scales, &mut out);
         }
     }
     Ok(out)
+}
+
+/// The `KHR_texture_transform` scale of every material, by index.
+///
+/// Read from the GLB's own JSON chunk: the `gltf` crate gives no typed view of
+/// the extension, and the scale is the whole point — the coordinates in the
+/// file are millimetres of surface, and this is what turns them into repeats.
+/// A material without one gets 1, which draws a single stretched repeat and
+/// makes it obvious that something is missing.
+fn texture_scales(bytes: &[u8]) -> Vec<[f64; 2]> {
+    let mut out = Vec::new();
+    let json = (|| -> Option<serde_json::Value> {
+        let length = u32::from_le_bytes(bytes.get(12..16)?.try_into().ok()?) as usize;
+        serde_json::from_slice(bytes.get(20..20 + length)?).ok()
+    })();
+    let Some(json) = json else { return out };
+    for material in json["materials"].as_array().into_iter().flatten() {
+        let scale = material["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]
+            ["KHR_texture_transform"]["scale"]
+            .as_array()
+            .or_else(|| {
+                material["normalTexture"]["extensions"]["KHR_texture_transform"]["scale"]
+                    .as_array()
+            })
+            .and_then(|s| Some([s.first()?.as_f64()?, s.get(1)?.as_f64()?]))
+            .unwrap_or([1.0, 1.0]);
+        out.push(scale);
+    }
+    out
 }
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -438,6 +640,8 @@ fn load_obj(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::err
                             base: PLAIN.0,
                             metallic: PLAIN.1,
                             roughness: PLAIN.2,
+                            uv: None,
+                            maps: None,
                         });
                     }
                 }

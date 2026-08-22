@@ -27,6 +27,7 @@ pub mod mesh;
 pub mod p2m;
 pub mod scene;
 pub mod sldmat;
+pub mod uv;
 
 pub use brep::{
     Bound, BodyType, Curve, Curve2, Edge, EdgeId, Face, FaceId, HalfEdge, NurbsCurve, NurbsCurve2,

@@ -8,7 +8,8 @@
 //! the start rather than recovered later by comparing meshes.
 
 use crate::brep::Solid;
-use crate::material::Material;
+use crate::image::Image;
+use crate::material::{ImageId, Material};
 use crate::math::{Aabb, Transform};
 use crate::mesh::Mesh;
 
@@ -48,6 +49,11 @@ pub struct Scene {
     pub roots: Vec<NodeId>,
     pub geometry: Vec<Geometry>,
     pub materials: Vec<Material>,
+    /// Every image any material refers to, once each. Kept on the scene rather
+    /// than on the material because two finishes share a normal map more often
+    /// than not — 139 appearances name 94 distinct files — and a writer has to
+    /// emit each one once whatever the materials do.
+    pub images: Vec<Image>,
     pub meta: Meta,
 }
 
@@ -143,6 +149,28 @@ impl Scene {
     }
 
     /// Add a material, reusing an identical existing one.
+    /// Add an image, or return the one already there with the same bytes.
+    ///
+    /// By content, not by name: the same file reached through two of the
+    /// library's paths is one image, and a GLB that carries it twice is a GLB
+    /// twice the size for nothing.
+    pub fn add_image(&mut self, image: Image) -> ImageId {
+        if let Some(i) = self
+            .images
+            .iter()
+            .position(|existing| existing.bytes == image.bytes)
+        {
+            return ImageId(i as u32);
+        }
+        let id = ImageId(self.images.len() as u32);
+        self.images.push(image);
+        id
+    }
+
+    pub fn image_of(&self, id: ImageId) -> &Image {
+        &self.images[id.index()]
+    }
+
     pub fn add_material(&mut self, material: Material) -> MaterialId {
         let key = material.dedup_key();
         if let Some(i) = self.materials.iter().position(|m| m.dedup_key() == key) {

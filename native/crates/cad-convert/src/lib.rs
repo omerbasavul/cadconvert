@@ -150,6 +150,31 @@ pub fn convert(input: &Path, output: &Path, options: &Options) -> Result<Summary
         }
     }
 
+    // Textures after meshing, coordinates after textures. The appearance
+    // library states a physical tile size, so the coordinates are a projection
+    // at world scale — and there is no point computing them for a mesh whose
+    // materials name no image, which is most of them.
+    summary
+        .warnings
+        .extend(cad_ir::material_resolve::attach_appearance_textures(&mut scene));
+    let textured: Vec<u32> = scene
+        .materials
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !m.textures.is_empty())
+        .map(|(i, _)| i as u32)
+        .collect();
+    if !textured.is_empty() {
+        for geometry in &mut scene.geometry {
+            let Some(mesh) = geometry.mesh.as_mut() else {
+                continue;
+            };
+            if mesh.parts.iter().any(|p| textured.contains(&p.material)) {
+                cad_ir::uv::project(mesh);
+            }
+        }
+    }
+
     let write = cad_export::Options {
         compression: match options.target {
             Target::Glb => cad_export::Compression::None,

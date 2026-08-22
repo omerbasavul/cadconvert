@@ -39,10 +39,25 @@
 //! Every calibration point above is a file in the bundled tree; the rule was
 //! chosen to fit them rather than the other way round.
 
-use crate::material::{Material, MaterialClass, MaterialSource};
+use crate::material::{Material, MaterialClass, MaterialSource, Textures};
 use std::collections::HashMap;
 
 include!(concat!(env!("OUT_DIR"), "/appearances.rs"));
+include!(concat!(env!("OUT_DIR"), "/textures.rs"));
+
+/// The bytes of a texture carried in the binary, by the normalised path an
+/// [`Appearance`] names it with.
+///
+/// Only the finishes [`representative`] can select bring their images; the
+/// library names 349 images and 255 MB of them, which is not something to put
+/// in a converter. Everything else returns `None` and converts without a
+/// texture, exactly as it did before there were any.
+pub fn bundled_texture(path: &str) -> Option<&'static [u8]> {
+    BUNDLED_TEXTURES
+        .iter()
+        .find(|(key, _)| *key == path)
+        .map(|(_, bytes)| *bytes)
+}
 
 /// A surface finish as the appearance library states it.
 #[derive(Debug, Clone, Default)]
@@ -124,6 +139,9 @@ impl Appearance {
                 raw: self.path.clone(),
                 preset: MaterialClass::Paint,
             },
+            // The images this appearance names are attached by whoever can
+            // load them; an Appearance has no Scene to put them in.
+            textures: Textures::default(),
         }
     }
 }
@@ -238,7 +256,14 @@ fn parse(path: &str, text: &str) -> Appearance {
             "specular_factor" => a.specular_factor = number().unwrap_or(0.0),
             "diffuse_factor" => a.diffuse_factor = number().unwrap_or(1.0),
             "transparency" => a.transparency = number().unwrap_or(0.0),
-            "mtl_ior" => a.ior = number(),
+            // An index of refraction of exactly 1 is vacuum, and 533 of the
+            // 619 files state it — for powder coat, for rubber, for concrete.
+            // It means "not stated", not "does not refract": taken literally
+            // it reaches glTF as KHR_materials_ior 1.0, which switches the
+            // Fresnel response off entirely and leaves paint with no sheen at
+            // any angle. The 47 files that state a real one — glass at 1.52,
+            // reflective glass at 1.591 — are the ones worth carrying.
+            "mtl_ior" => a.ior = number().filter(|&v| v > 1.0 + 1e-9),
             "blurryReflections" => a.blurry = value.starts_with("on"),
             "sw_shader" => a.shader = value.trim_matches('"').to_lowercase(),
             "metallic_color" | "metallic_ior" => a.metallic = true,
@@ -403,6 +428,57 @@ mod tests {
             .filter(|a| a.normal_texture.is_none() && a.height_texture.is_some())
             .count();
         assert!(held_as_height > 0);
+    }
+
+    #[test]
+    fn every_finish_that_can_be_chosen_carries_its_images() {
+        // build.rs embeds the textures of a fixed list of finishes, and
+        // `representative` decides which finishes can be reached. Two lists,
+        // and nothing but this test to stop them drifting apart: a finish
+        // added to one and not the other converts silently without its
+        // textures, which is the kind of quiet loss this project keeps finding.
+        if BUNDLED_TEXTURES.is_empty() {
+            // No image tree on this machine — a fresh clone, or CI. build.rs
+            // has already said so. There is nothing to be inconsistent with.
+            return;
+        }
+        let lib = AppearanceLibrary::bundled();
+        let mut checked = 0;
+        for &class in MaterialClass::ALL {
+            for matte in [true, false] {
+                let Some(path) = representative(class, matte) else {
+                    continue;
+                };
+                let a = lib.get(path).expect("a representative that exists");
+                for texture in [&a.colour_texture, &a.normal_texture].into_iter().flatten() {
+                    assert!(
+                        bundled_texture(texture).is_some(),
+                        "{path} names {texture}, which build.rs did not embed"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 2, "the powder coat alone names two images");
+    }
+
+    #[test]
+    fn an_index_of_refraction_of_one_is_not_an_index_of_refraction() {
+        let lib = AppearanceLibrary::bundled();
+
+        // Glass states its own and keeps it.
+        assert_eq!(lib.get("glass/gloss/clear glass").unwrap().ior, Some(1.52));
+        let reflective = lib.get("glass/gloss/reflective clear glass").unwrap();
+        assert!((reflective.ior.unwrap() - 1.591).abs() < 1e-9);
+
+        // Powder coat says 1, which is vacuum, which it is not. Nothing is
+        // carried and the writers use glTF's own 1.5.
+        let powder = lib.get("painted/powder coat/dark powdercoat").unwrap();
+        assert_eq!(powder.ior, None);
+        assert!((powder.to_material("x").ior - 1.5).abs() < 1e-6);
+
+        let stated = lib.appearances.values().filter(|a| a.ior.is_some()).count();
+        assert_eq!(stated, 47, "the rest of the library says 1");
     }
 
     #[test]

@@ -134,6 +134,7 @@ impl SldMaterial {
                 preset: crate::material::MaterialClass::from_name(&self.name)
                     .unwrap_or(fallback_class(metallic > 0.0)),
             },
+            textures: crate::material::Textures::default(),
         }
     }
 

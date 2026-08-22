@@ -68,6 +68,15 @@ struct Builder<'a> {
     /// instanced. See [`Builder::add_node`].
     dequant: Vec<Option<([f32; 3], [f32; 3])>>,
     extensions_used: Vec<&'static str>,
+    /// glTF texture index for each scene image, filled on first use. An image
+    /// nothing refers to is never written.
+    texture_index: Vec<Option<usize>>,
+    images: Vec<Value>,
+    textures: Vec<Value>,
+    /// One sampler, referred to by every texture: repeat in both directions
+    /// with the usual filtering. The appearances tile, and nothing in the
+    /// library asks for anything else.
+    sampler: Option<usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -85,7 +94,59 @@ impl<'a> Builder<'a> {
             mesh_index: vec![None; scene.geometry.len()],
             dequant: vec![None; scene.geometry.len()],
             extensions_used: Vec::new(),
+            texture_index: vec![None; scene.images.len()],
+            images: Vec::new(),
+            textures: Vec::new(),
+            sampler: None,
         }
+    }
+
+    /// The glTF texture index for a scene image, writing the image into the
+    /// binary chunk the first time it is asked for.
+    fn texture_for(&mut self, id: cad_ir::material::ImageId) -> usize {
+        if let Some(index) = self.texture_index[id.index()] {
+            return index;
+        }
+        let image = &self.scene.images[id.index()];
+        let (bytes, mime, name) = (image.bytes.clone(), image.mime.as_str(), image.name.clone());
+
+        // Images go in the binary chunk rather than as data: URIs. A GLB is
+        // meant to be one file and base64 would cost a third of the size for
+        // nothing.
+        let view = self.push_view(&bytes, None, 4, None);
+        let image_index = self.images.len();
+        self.images.push(json!({
+            "name": name,
+            "mimeType": mime,
+            "bufferView": view,
+        }));
+
+        let sampler = match self.sampler {
+            Some(s) => s,
+            None => {
+                self.sampler = Some(0);
+                0
+            }
+        };
+        let index = self.textures.len();
+        self.textures.push(json!({ "sampler": sampler, "source": image_index }));
+        self.texture_index[id.index()] = Some(index);
+        index
+    }
+
+    /// A material's texture references, resolved to glTF indices.
+    ///
+    /// Done here rather than in `material_json` because assigning an index
+    /// writes an image into the buffer, which `material_json` — a free
+    /// function over one material — cannot do.
+    fn material_textures(&mut self, index: usize) -> Option<(Option<usize>, Option<usize>)> {
+        let textures = self.scene.materials.get(index)?.textures;
+        if textures.is_empty() {
+            return None;
+        }
+        let colour = textures.base_colour.map(|id| self.texture_for(id));
+        let normal = textures.normal.map(|id| self.texture_for(id));
+        Some((colour, normal))
     }
 
     fn build(&mut self) -> Result<()> {
@@ -94,8 +155,13 @@ impl<'a> Builder<'a> {
         }
 
         let mut names = Names::default();
-        for m in &self.scene.materials {
-            let value = material_json(m, &mut names);
+        for i in 0..self.scene.materials.len() {
+            let resolved = self.material_textures(i);
+            let m = &self.scene.materials[i];
+            let mut value = material_json(m, &mut names);
+            if let Some((colour, normal)) = resolved {
+                attach_textures(&mut value, m, colour, normal);
+            }
             self.materials.push(value);
         }
         // A scene with no materials still needs one, since every primitive
@@ -151,6 +217,15 @@ impl<'a> Builder<'a> {
             Compression::Quantized | Compression::Normals
         );
         let want_normals = self.options.normals && mesh.normals.len() == mesh.positions.len();
+        // Only where they are used. Two floats a vertex over two million
+        // vertices is 16 MB, and a mesh whose materials carry no image has
+        // nothing to do with them.
+        let want_uvs = mesh.uvs.len() == mesh.positions.len()
+            && mesh
+                .parts
+                .iter()
+                .filter_map(|p| self.scene.materials.get(p.material as usize))
+                .any(|m| !m.textures.is_empty());
         // The quantisation grid is the whole mesh's, not each chunk's, so every
         // chunk of one geometry shares the single node that undoes it.
         let dequant = quantise_positions.then(|| quantisation(mesh));
@@ -200,11 +275,16 @@ impl<'a> Builder<'a> {
                         self.write_normals(mesh, &chunk.vertices)
                     }
                 });
+                let uv_accessor =
+                    want_uvs.then(|| self.write_uvs(mesh, &chunk.vertices));
                 let indices = self.write_indices(&chunk.indices);
                 let mut attributes = Map::new();
                 attributes.insert("POSITION".into(), json!(position_accessor));
                 if let Some(n) = normal_accessor {
                     attributes.insert("NORMAL".into(), json!(n));
+                }
+                if let Some(uv) = uv_accessor {
+                    attributes.insert("TEXCOORD_0".into(), json!(uv));
                 }
                 primitives.push(json!({
                     "attributes": attributes,
@@ -363,6 +443,30 @@ impl<'a> Builder<'a> {
         accessor
     }
 
+    /// Texture coordinates, as computed: millimetres of surface.
+    ///
+    /// Not quantised even when the positions are. They span the whole part
+    /// rather than a 0..1 square — that is what carries the physical scale —
+    /// so a 16-bit grid over their range would be a grid over the part, and
+    /// the tiling multiplies any error in them by however many repeats there
+    /// are. Two floats a vertex, on the meshes that have a textured material
+    /// and no others.
+    fn write_uvs(&mut self, mesh: &Mesh, vertices: &[u32]) -> usize {
+        let mut bytes = Vec::with_capacity(vertices.len() * 8);
+        for &v in vertices {
+            let uv = mesh.uvs[v as usize];
+            bytes.extend_from_slice(&uv[0].to_le_bytes());
+            bytes.extend_from_slice(&uv[1].to_le_bytes());
+        }
+        let view = self.push_view(&bytes, Some(ARRAY_BUFFER), 8, None);
+        self.push_accessor(json!({
+            "bufferView": view,
+            "componentType": FLOAT,
+            "count": vertices.len(),
+            "type": "VEC2",
+        }))
+    }
+
     fn write_normals(&mut self, mesh: &Mesh, vertices: &[u32]) -> usize {
         let mut bytes = Vec::with_capacity(vertices.len() * 12);
         for &v in vertices {
@@ -485,9 +589,20 @@ impl<'a> Builder<'a> {
             meshes,
             nodes,
             materials,
-            extensions_used,
+            mut extensions_used,
+            images,
+            textures,
+            sampler,
             ..
         } = self;
+
+        if !textures.is_empty() && !extensions_used.contains(&"KHR_texture_transform") {
+            // Declared whenever a texture is written: every texture reference
+            // this emits carries the tile scale, and a reader that does not
+            // understand the extension would draw one repeat stretched over
+            // the whole part.
+            extensions_used.push("KHR_texture_transform");
+        }
 
         let root_node = nodes.len() - 1;
         let mut root = Map::new();
@@ -508,15 +623,47 @@ impl<'a> Builder<'a> {
         root.insert("nodes".into(), json!(nodes));
         root.insert("meshes".into(), json!(meshes));
         root.insert("materials".into(), json!(materials));
+        if !images.is_empty() {
+            root.insert("images".into(), json!(images));
+            root.insert("textures".into(), json!(textures));
+            root.insert(
+                "samplers".into(),
+                // Repeat in both directions, and mipmapped trilinear
+                // minification: a 6.35 mm tile across a 300 mm part is dozens
+                // of repeats, and without mipmaps that is aliasing.
+                json!([{
+                    "magFilter": 9729,                    // LINEAR
+                    "minFilter": 9987,                    // LINEAR_MIPMAP_LINEAR
+                    "wrapS": 10497,                       // REPEAT
+                    "wrapT": 10497,
+                }]),
+            );
+            let _ = sampler;
+        }
         root.insert("accessors".into(), json!(accessors));
         root.insert("bufferViews".into(), json!(buffer_views));
         root.insert("buffers".into(), json!([{ "byteLength": bin.len() }]));
         if !extensions_used.is_empty() {
             root.insert("extensionsUsed".into(), json!(extensions_used));
-            // Quantisation changes what the accessor data *means*, so a viewer
-            // that ignores it renders nonsense rather than something plainer.
-            // That makes it required, not merely used.
-            root.insert("extensionsRequired".into(), json!(extensions_used));
+            // Used and required are not the same list, and getting that wrong
+            // costs a viewer the whole file.
+            //
+            // Quantisation changes what the accessor data *means*: without it
+            // a viewer draws integers as if they were millimetres and produces
+            // nonsense. That has to be required.
+            //
+            // A texture transform does not. Ignore it and the grain is drawn
+            // at one repeat across the part instead of one every 6.35 mm —
+            // wrong, and still a part on the screen. Requiring it would mean a
+            // viewer without the extension refuses to open the file at all,
+            // which is a worse answer to "your renderer is a little older".
+            let required: Vec<_> = extensions_used
+                .iter()
+                .filter(|e| **e != "KHR_texture_transform")
+                .collect();
+            if !required.is_empty() {
+                root.insert("extensionsRequired".into(), json!(required));
+            }
         }
         let _ = Unit::Millimetre;
 
@@ -678,6 +825,54 @@ fn material_json(m: &Material, names: &mut Names) -> Value {
         value.insert("extensions".into(), Value::Object(extensions));
     }
     Value::Object(value)
+}
+
+/// Point a material's JSON at the textures it uses.
+///
+/// The tile size arrives as a physical measurement — 6.35 mm for powder coat —
+/// and the coordinates are in millimetres of surface, so the repeat is a scale
+/// of one over the tile. That is `KHR_texture_transform`, which every viewer
+/// worth the name supports and which is far better than baking the tiling into
+/// shared vertices: two materials on one mesh can tile differently, and they
+/// do.
+fn attach_textures(
+    value: &mut Value,
+    material: &Material,
+    colour: Option<usize>,
+    normal: Option<usize>,
+) {
+    let transform = material.textures.tile_mm().map(|[w, h]| {
+        json!({ "KHR_texture_transform": { "scale": [1.0 / w, 1.0 / h] } })
+    });
+    let reference = |index: usize| -> Value {
+        let mut map = Map::new();
+        map.insert("index".into(), json!(index));
+        if let Some(t) = &transform {
+            map.insert("extensions".into(), t.clone());
+        }
+        Value::Object(map)
+    };
+
+    if let Some(index) = colour {
+        if let Some(Value::Object(pbr)) = value.get_mut("pbrMetallicRoughness") {
+            pbr.insert("baseColorTexture".into(), reference(index));
+        }
+    }
+    if let Some(index) = normal {
+        let mut map = Map::new();
+        map.insert("index".into(), json!(index));
+        let scale = material.textures.normal_scale();
+        if (scale - 1.0).abs() > 1e-6 {
+            map.insert("scale".into(), json!(scale));
+        }
+        if let Some(t) = &transform {
+            map.insert("extensions".into(), t.clone());
+        }
+        value
+            .as_object_mut()
+            .expect("a material is an object")
+            .insert("normalTexture".into(), Value::Object(map));
+    }
 }
 
 #[cfg(test)]
@@ -927,6 +1122,128 @@ mod tests {
         for i in 0..3 {
             assert!((pbr.base_color_factor()[i] - want.base_color[i]).abs() < 1e-6);
         }
+    }
+
+    /// A scene whose one material carries both images, tiled at 6.35 mm.
+    fn textured_scene() -> Scene {
+        use cad_ir::image::{Image, Mime};
+        use cad_ir::material::Textures;
+
+        let mut s = Scene::default();
+        let colour = s.add_image(Image {
+            name: "grain.png".into(),
+            mime: Mime::Png,
+            width: 2,
+            height: 2,
+            bytes: cad_ir::image::encode_png(2, 2, &[128; 16]),
+        });
+        let normal = s.add_image(Image {
+            name: "normal.png".into(),
+            mime: Mime::Png,
+            width: 2,
+            height: 2,
+            bytes: cad_ir::image::encode_png(2, 2, &[10, 20, 30, 255].repeat(4)),
+        });
+
+        let mut textures = Textures::default();
+        textures.base_colour = Some(colour);
+        textures.normal = Some(normal);
+        textures.set_tile_mm(Some([6.35, 6.35]));
+        textures.set_normal_scale(1.0);
+
+        let mut material = Material::from_class(MaterialClass::Paint, "powder coat");
+        material.textures = textures;
+        s.add_material(material);
+
+        let mut mesh = tri(0);
+        cad_ir::uv::project(&mut mesh);
+        let g = s.add_geometry(Geometry {
+            name: "plate".into(),
+            brep: None,
+            mesh: Some(mesh),
+            material: None,
+            face_materials: vec![],
+        });
+        let n = s.add_node(Node { name: "plate".into(), geometry: Some(g), ..Default::default() });
+        s.roots.push(n);
+        s
+    }
+
+    #[test]
+    fn a_textured_material_reaches_a_reader_with_both_its_images() {
+        let bytes = write_bytes(&textured_scene(), &Options::default()).unwrap();
+        let (document, buffers, images) =
+            gltf::import_slice(&bytes).expect("gltf reader rejected it");
+
+        // The reader decoded both, which means the PNG this project writes is
+        // readable by something that is not this project.
+        assert_eq!(images.len(), 2, "both images should be there and decodable");
+        assert!(images.iter().all(|i| i.width == 2 && i.height == 2));
+
+        let material = document.materials().next().expect("a material");
+        let base = material
+            .pbr_metallic_roughness()
+            .base_color_texture()
+            .expect("a base colour texture");
+        let normal = material.normal_texture().expect("a normal texture");
+        assert_ne!(base.texture().index(), normal.texture().index());
+
+        // Both are sampled with repeat, or a 6.35 mm tile on a 300 mm part
+        // shows once and then clamps.
+        for info in [base.texture(), normal.texture()] {
+            assert_eq!(info.sampler().wrap_s(), gltf::texture::WrappingMode::Repeat);
+            assert_eq!(info.sampler().wrap_t(), gltf::texture::WrappingMode::Repeat);
+        }
+
+        // And the coordinates arrived.
+        let primitive = document.meshes().next().unwrap().primitives().next().unwrap();
+        let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+        let uvs: Vec<[f32; 2]> = reader
+            .read_tex_coords(0)
+            .expect("TEXCOORD_0")
+            .into_f32()
+            .collect();
+        assert_eq!(uvs.len(), 3);
+        // The test triangle is 10 mm along x, and the coordinates are in
+        // millimetres of surface: the tiling is the material's business.
+        let span = uvs.iter().map(|uv| uv[0]).fold(f32::MIN, f32::max)
+            - uvs.iter().map(|uv| uv[0]).fold(f32::MAX, f32::min);
+        assert!((span - 10.0).abs() < 1e-4, "u spans {span} mm, expected 10");
+    }
+
+    #[test]
+    fn the_tile_size_travels_as_a_texture_transform() {
+        let bytes = write_bytes(&textured_scene(), &Options::default()).unwrap();
+        let json = json_of(&bytes);
+
+        let used = json["extensionsUsed"].as_array().unwrap();
+        assert!(used.iter().any(|e| e == "KHR_texture_transform"));
+
+        // One repeat every 6.35 mm, against coordinates in millimetres.
+        let scale = &json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]
+            ["extensions"]["KHR_texture_transform"]["scale"];
+        let s = scale[0].as_f64().unwrap();
+        assert!((s - 1.0 / 6.35).abs() < 1e-9, "scale {s}");
+        assert_eq!(scale[0], scale[1]);
+    }
+
+    #[test]
+    fn a_mesh_whose_materials_have_no_image_carries_no_coordinates() {
+        // Two floats a vertex is 16 MB on the pilot. A mesh that cannot use
+        // them must not pay for them.
+        let mut s = scene();
+        for g in &mut s.geometry {
+            if let Some(m) = g.mesh.as_mut() {
+                cad_ir::uv::project(m);
+            }
+        }
+        let json = json_of(&write_bytes(&s, &Options::default()).unwrap());
+        for mesh in json["meshes"].as_array().unwrap() {
+            for primitive in mesh["primitives"].as_array().unwrap() {
+                assert!(primitive["attributes"].get("TEXCOORD_0").is_none());
+            }
+        }
+        assert!(json.get("images").is_none());
     }
 
     #[test]

@@ -37,6 +37,66 @@ pub struct Material {
     pub double_sided: bool,
     /// Where this material's values came from.
     pub source: MaterialSource,
+    /// The image the base colour is multiplied by, and the one that perturbs
+    /// the normal. Indices into [`crate::Scene::images`].
+    pub textures: Textures,
+}
+
+/// The images a material uses, and how big they are on the part.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Textures {
+    /// Multiplied by `base_color`. In the appearance library this is usually a
+    /// grey grain rather than a colour — `powdercoat_dark.jpg` measures chroma
+    /// 0.0 — so it modulates the file's own colour rather than replacing it.
+    pub base_colour: Option<ImageId>,
+    /// A tangent-space normal map.
+    pub normal: Option<ImageId>,
+    /// How far the normal map is allowed to tilt the surface, as glTF's
+    /// `normalTexture.scale` and USD's `UsdPreviewSurface` normal input. Bits,
+    /// so that a material is still `Eq` and can be a hash key.
+    normal_scale_bits: u32,
+    /// The physical size of one tile in millimetres, from the appearance's
+    /// `initTextureWidth`. Texture coordinates are generated at world scale and
+    /// this is what turns them into repeats — 6.35 mm for powder coat. Bits,
+    /// for the same reason.
+    tile_mm_bits: Option<[u32; 2]>,
+}
+
+impl Textures {
+    pub fn is_empty(&self) -> bool {
+        self.base_colour.is_none() && self.normal.is_none()
+    }
+
+    pub fn normal_scale(&self) -> f32 {
+        if self.normal_scale_bits == 0 {
+            1.0
+        } else {
+            f32::from_bits(self.normal_scale_bits)
+        }
+    }
+
+    pub fn set_normal_scale(&mut self, scale: f32) {
+        self.normal_scale_bits = scale.to_bits();
+    }
+
+    pub fn tile_mm(&self) -> Option<[f32; 2]> {
+        self.tile_mm_bits
+            .map(|[w, h]| [f32::from_bits(w), f32::from_bits(h)])
+    }
+
+    pub fn set_tile_mm(&mut self, tile: Option<[f32; 2]>) {
+        self.tile_mm_bits = tile.map(|[w, h]| [w.to_bits(), h.to_bits()]);
+    }
+}
+
+/// Index into [`crate::Scene::images`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ImageId(pub u32);
+
+impl ImageId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// Provenance of a material's appearance.
@@ -103,6 +163,7 @@ impl Material {
             emissive: [0.0; 3],
             double_sided: false,
             source: MaterialSource::Default,
+            textures: Textures::default(),
         }
     }
 
@@ -123,6 +184,7 @@ impl Material {
             emissive: [0.0; 3],
             double_sided: false,
             source: MaterialSource::Colour,
+            textures: Textures::default(),
         }
     }
 
@@ -169,6 +231,7 @@ impl Material {
             emissive: [0.0; 3],
             double_sided: false,
             source: MaterialSource::Named { raw, preset: class },
+            textures: Textures::default(),
         }
     }
 
@@ -217,6 +280,7 @@ impl Material {
                 self.emissive[2].to_bits(),
             ],
             double_sided: self.double_sided,
+            textures: self.textures,
         }
     }
 }
@@ -227,6 +291,9 @@ pub struct MaterialKey {
     name: String,
     bits: [u32; 11],
     double_sided: bool,
+    /// Two materials that differ only in their images are two materials. A
+    /// powder coat with its grain and one without are not interchangeable.
+    textures: Textures,
 }
 
 impl MaterialClass {
