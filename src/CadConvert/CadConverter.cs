@@ -16,6 +16,10 @@ namespace CadConvert
         /// <summary>Positions on each mesh's own 16-bit grid as well. Smallest,
         /// and it collapses the finest slivers.</summary>
         Compact = 2,
+        /// <summary>A USDZ package rather than glTF. The same scene and the
+        /// same materials; USD's text form spells every coordinate out, so the
+        /// file runs several times the size of the equivalent glTF.</summary>
+        Usdz = 3,
     }
 
     /// <summary>How finely to mesh, and what to write.</summary>
@@ -36,6 +40,9 @@ namespace CadConvert
 
         /// <summary>What to write. Lean is the default: smaller, with every
         /// vertex exactly where it was computed.</summary>
+        /// <summary>What to write. The output path's extension wins over this:
+        /// a path ending <c>.usdz</c> writes a USD package whatever is set
+        /// here, and one ending <c>.glb</c> writes glTF.</summary>
         public MeshTarget Target { get; set; } = MeshTarget.Lean;
 
         /// <summary>Read a STEP file's <c>.x_t</c> twin, when one sits beside it,

@@ -138,6 +138,55 @@ namespace CadConvert.Tests
         }
 
         [Fact]
+        public void TheOutputsExtensionChoosesTheContainer()
+        {
+            // A caller who names the file .usdz has said which format they
+            // want more plainly than any option could, so the name wins over
+            // the target — including over the default.
+            using var dir = new TempDirectory();
+            string output = dir.File("part.usdz");
+
+            var result = CadConverter.Convert(Sample.SmallXt, output,
+                new ConvertOptions { Target = MeshTarget.Lean });
+
+            Assert.True(result.Triangles > 0);
+            // A USDZ is a zip, and its first entry is the scene.
+            byte[] head = new byte[4];
+            using (var file = File.OpenRead(output)) file.Read(head, 0, 4);
+            Assert.Equal(new byte[] { 0x50, 0x4B, 0x03, 0x04 }, head);
+        }
+
+        [Fact]
+        public void AUsdzTargetStillWritesGltfWhenTheNameSaysGlb()
+        {
+            using var dir = new TempDirectory();
+            string output = dir.File("part.glb");
+
+            CadConverter.Convert(Sample.SmallXt, output,
+                new ConvertOptions { Target = MeshTarget.Usdz });
+
+            byte[] magic = new byte[4];
+            using (var file = File.OpenRead(output)) file.Read(magic, 0, 4);
+            Assert.Equal(Sample.GlbMagic, magic);
+        }
+
+        [Fact]
+        public void AUsdzCarriesTheSameMeshAsTheGlb()
+        {
+            // Two containers, one scene. If the counts ever disagree, one of
+            // the writers is dropping something.
+            using var dir = new TempDirectory();
+
+            var glb = CadConverter.Convert(Sample.SmallXt, dir.File("a.glb"));
+            var usdz = CadConverter.Convert(Sample.SmallXt, dir.File("a.usdz"));
+
+            Assert.Equal(glb.Triangles, usdz.Triangles);
+            Assert.Equal(glb.Faces, usdz.Faces);
+            Assert.Equal(glb.FacesMeshed, usdz.FacesMeshed);
+            Assert.Equal(glb.Bodies, usdz.Bodies);
+        }
+
+        [Fact]
         public void AnExistingOutputFileIsReplaced()
         {
             using var dir = new TempDirectory();

@@ -21,11 +21,16 @@ enum Phase {
 }
 
 const USAGE: &str = "\
-cadconvert — Parasolid (.x_t) and STEP (.stp) to glTF binary
+cadconvert — Parasolid (.x_t) and STEP (.stp) to glTF binary or USDZ
 
   cadconvert <input> [output] [options]
 
-  -q, --quality <plain|lean|compact>   what to write (default: lean)
+  The output's extension chooses the container: .glb for glTF binary,
+  .usdz for a USD package. Without an output, the input's name with .glb.
+
+  -q, --quality <plain|lean|compact>   how a glTF stores its vertices
+                                       (default: lean). USD has no such
+                                       choice and ignores this.
       --sag <mm>                       how far the mesh may sit from the
                                        surface. The default is 0.04% of the
                                        model's own diagonal, which scales with
@@ -94,6 +99,7 @@ fn run() -> Result<(), String> {
                     "plain" => cad_convert::Target::Glb,
                     "lean" => cad_convert::Target::GlbLean,
                     "compact" => cad_convert::Target::GlbCompact,
+                    "usdz" => cad_convert::Target::Usdz,
                     other => return Err(format!("unknown quality {other:?}")),
                 }
             }
@@ -130,7 +136,8 @@ fn run() -> Result<(), String> {
         print!("{USAGE}");
         return Err("no input file".into());
     };
-    let output = output.unwrap_or_else(|| input.with_extension("glb"));
+    let output = output
+        .unwrap_or_else(|| input.with_extension(options.target.extension()));
 
     if let Some(mm) = sag {
         // A number in millimetres is absolute; the default is a fraction.

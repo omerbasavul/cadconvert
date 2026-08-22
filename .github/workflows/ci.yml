@@ -141,6 +141,22 @@ jobs:
       # The C header is part of the contract, so it is compiled against rather
       # than trusted: a struct that drifts from the Rust side is a caller
       # reading the wrong bytes, and nothing else in the build would notice.
+      # macOS ships usdchecker, so the USDZ writer is held to Apple's own
+      # reading of the format rather than to ours. --arkit is the stricter
+      # pass, the one a package has to survive to open in Quick Look. It
+      # caught five real defects the first time it ran, one of them the scale
+      # and bias an 8-bit normal map needs in USD and does not in glTF —
+      # without which every normal in the file reads as pointing inward.
+      - name: usdchecker, including Apple's AR rules
+        if: runner.os == 'macOS' && matrix.rid == 'osx-arm64'
+        shell: bash
+        working-directory: native
+        run: |
+          set -euo pipefail
+          cargo run --release -q -p cad-export --example usdz_probe -- /tmp/probe.usdz
+          usdchecker /tmp/probe.usdz
+          usdchecker --arkit /tmp/probe.usdz
+
       # Skipped where the library cannot run: a cross-built binary links but
       # cannot be executed by this runner.
       - name: compile the C header against the built library (unix)

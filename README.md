@@ -1,9 +1,9 @@
 # CadConvert
 
 Turn a CAD file into a mesh: **Parasolid** (`.x_t`) and **STEP** (`.stp`) in,
-**glTF 2.0** out — the B-Rep read, tessellated watertight, with the materials
-the designer chose. No CAD kernel to install and no licence server; one native
-library of about 2.5 MB.
+**glTF 2.0** or **USDZ** out — the B-Rep read, tessellated watertight, with the
+materials the designer chose. No CAD kernel to install and no licence server;
+one native library of about 2.5 MB.
 
 ```csharp
 var result = CadConvert.CadConverter.Convert("housing.x_t", "housing.glb");
@@ -13,6 +13,7 @@ Console.WriteLine($"{result.Bodies} bodies, {result.Triangles:N0} triangles");
 ```sh
 cadconvert housing.x_t                       # → housing.glb
 cadconvert assembly.stp out.glb -q compact
+cadconvert assembly.stp out.usdz             # the extension picks the format
 ```
 
 ```c
@@ -78,6 +79,33 @@ Neither format names a material. What is recovered, in order:
 3. **the finish**, from SolidWorks' own libraries, both carried in the binary:
    115 materials from a `.sldmat` and 619 appearances from `.p2m` files,
    including the powder coat a machine casting is actually delivered in.
+
+An appearance also names images, and those are read now: 229 of the 619 name a
+colour image and 139 a tangent-space normal map. The powder coat brings both,
+tiled every **6.35 mm** — its own `initTextureWidth`, which is why texture
+coordinates are a projection at world scale rather than anything derived from
+surface parameters.
+
+The colour image is not a colour. `powdercoat_dark.jpg` has a linear mean of
+0.1830 and the appearance states `col1` 0.1843 — the same number, because the
+image is the appearance's own colour times a grain whose mean is one.
+Multiplying the part's colour by it as it stands applies that level twice and
+costs a fifth of the brightness; dividing by `col1` leaves the grain and keeps
+the colour the file gave.
+
+## USDZ
+
+The same scene, for the tools that read USD. `UsdPreviewSurface` and glTF's
+metallic-roughness model are one model with two spellings, so the colour, the
+metal, the roughness, the index of refraction, the grain and the normal map all
+survive the crossing. Every package is checked against Apple's own
+`usdchecker`, including `--arkit`.
+
+It costs size. USD's text form spells every coordinate out, and the pilot comes
+to 172 MB against the glTF's 40. USD's binary form would be 43 MB — measured,
+by handing our own output to `usdcat` — but writing one is a container of its
+own, with a token table, a path table and a bespoke integer encoding, and it is
+not written here yet.
 
 ## Robustness and cost
 

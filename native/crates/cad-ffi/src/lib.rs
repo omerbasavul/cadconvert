@@ -19,6 +19,7 @@ use std::path::PathBuf;
 pub const CADCONVERT_TARGET_PLAIN: i32 = 0;
 pub const CADCONVERT_TARGET_LEAN: i32 = 1;
 pub const CADCONVERT_TARGET_COMPACT: i32 = 2;
+pub const CADCONVERT_TARGET_USDZ: i32 = 3;
 
 /// Outcomes. Zero is success; everything else leaves `summary` untouched.
 pub const CADCONVERT_OK: i32 = 0;
@@ -218,6 +219,7 @@ fn settings(o: &CadconvertOptions) -> cad_convert::Options {
         target: match o.target {
             CADCONVERT_TARGET_PLAIN => cad_convert::Target::Glb,
             CADCONVERT_TARGET_COMPACT => cad_convert::Target::GlbCompact,
+            CADCONVERT_TARGET_USDZ => cad_convert::Target::Usdz,
             _ => cad_convert::Target::GlbLean,
         },
         use_parasolid_twin: o.use_parasolid_twin != 0,

@@ -18,6 +18,7 @@ extern "C" {
 #define CADCONVERT_TARGET_PLAIN   0  /* positions and normals exactly as computed */
 #define CADCONVERT_TARGET_LEAN    1  /* normals a byte a component; no vertex moves */
 #define CADCONVERT_TARGET_COMPACT 2  /* positions on each mesh's own 16-bit grid too */
+#define CADCONVERT_TARGET_USDZ    3  /* a USD package instead of glTF */
 
 /* Outcomes. Zero is success; everything else leaves the summary untouched. */
 #define CADCONVERT_OK                  0

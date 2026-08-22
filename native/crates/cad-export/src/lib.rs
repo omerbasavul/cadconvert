@@ -23,6 +23,7 @@
 pub mod error;
 pub mod glb;
 pub mod prepare;
+pub mod usd;
 
 pub use error::{ExportError, Result};
 

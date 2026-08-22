@@ -69,6 +69,39 @@ pub enum Target {
     GlbLean,
     /// glTF binary with positions on each mesh's own 16-bit grid as well.
     GlbCompact,
+    /// A USDZ package: USD in its text form, with the images beside it.
+    ///
+    /// The same scene and the same materials — `UsdPreviewSurface` and glTF's
+    /// metallic-roughness model are one model with two spellings. It costs
+    /// size: USD's text form spells every coordinate out, so the file runs
+    /// several times its glTF.
+    Usdz,
+}
+
+impl Target {
+    /// The extension a target writes.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Target::Usdz => "usdz",
+            _ => "glb",
+        }
+    }
+
+    /// The target a file name asks for, where it asks for one.
+    ///
+    /// Only the container. Which of the three glTF targets to use is a
+    /// question about size and precision that a file name does not answer.
+    pub fn of_extension(path: &Path) -> Option<Target> {
+        match path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref()
+        {
+            Some("usdz" | "usda" | "usdc" | "usd") => Some(Target::Usdz),
+            Some("glb" | "gltf") => Some(Target::Glb),
+            _ => None,
+        }
+    }
 }
 
 /// How finely to mesh, and what to write.
@@ -175,15 +208,30 @@ pub fn convert(input: &Path, output: &Path, options: &Options) -> Result<Summary
         }
     }
 
+    // The name decides the container. A caller who asks for `out.usdz` and a
+    // glTF target meant the USDZ: the extension is the explicit statement and
+    // the target's default is not.
+    let target = match Target::of_extension(output) {
+        Some(Target::Usdz) => Target::Usdz,
+        Some(_) if options.target == Target::Usdz => Target::Glb,
+        _ => options.target,
+    };
+
     let write = cad_export::Options {
-        compression: match options.target {
-            Target::Glb => cad_export::Compression::None,
+        compression: match target {
             Target::GlbLean => cad_export::Compression::Normals,
             Target::GlbCompact => cad_export::Compression::Quantized,
+            // USD's text form has no encoding to choose; it writes what it is
+            // given.
+            Target::Glb | Target::Usdz => cad_export::Compression::None,
         },
         ..cad_export::Options::default()
     };
-    summary.bytes = cad_export::glb::write_file(&scene, &write, output).map_err(|e| Error::Write {
+    let written = match target {
+        Target::Usdz => cad_export::usd::write_file(&scene, &write, output),
+        _ => cad_export::glb::write_file(&scene, &write, output),
+    };
+    summary.bytes = written.map_err(|e| Error::Write {
         path: output.to_path_buf(),
         detail: e.to_string(),
     })?;
