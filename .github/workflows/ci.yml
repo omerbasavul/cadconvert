@@ -109,8 +109,10 @@ jobs:
         run: |
           set -euo pipefail
           file "runtimes/${{ matrix.rid }}/native/${{ matrix.lib }}"
+          # file(1) spells these differently on each platform: Linux says
+          # "x86-64" and "ARM aarch64", macOS says "x86_64" and "arm64".
           case "${{ matrix.rid }}" in
-            *-x64)   want="x86_64" ;;
+            *-x64)   want="x86_64\|x86-64" ;;
             *-arm64) want="arm64\|aarch64" ;;
           esac
           file "runtimes/${{ matrix.rid }}/native/${{ matrix.lib }}" | grep -q "$want" \
