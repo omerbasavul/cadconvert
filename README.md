@@ -62,8 +62,8 @@ alone is satisfied by almost no subdivision on a small radius, which is how a
 | `lean` *(default)* | normals a byte a component; **no vertex moves** | 77 % |
 | `compact` | positions on each mesh's own 16-bit grid as well | 65 % |
 
-`compact` is for delivery: it also collapses the mesh's finest slivers, so hand
-on `lean` if the mesh will be modelled with further.
+`compact` is for delivery: it also collapses the mesh's finest slivers, so stay
+on `lean` if the mesh will be worked on further.
 
 ## Materials
 
@@ -86,6 +86,14 @@ Twenty-two mutations of the test model — truncated anywhere from 0.1 % to
 **none crashed.** Fourteen were refused with a reason, eight produced a file
 from what could be recovered, and even the one built from corrupted bytes came
 out watertight. Four threads converting at once agree to the triangle.
+
+That is 245 Rust tests over the readers and the tessellator, and 28 .NET tests
+over the crossing itself — that the library loads from where the build put it,
+that a non-ASCII path survives the marshalling, that making the file smaller
+never costs a triangle, and that a malformed part returns an error code rather
+than unwinding into the host. CI runs the Rust tests on Linux, macOS and
+Windows, and the .NET tests on each of the five runtimes — unwinding across
+the ABI is exactly where platforms differ.
 
 On an M-series laptop, at the default quality:
 
