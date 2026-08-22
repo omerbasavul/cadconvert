@@ -1,4 +1,12 @@
-# xt-parser — Parasolid PS30+ XT Text Format Reference
+# Parasolid PS30+ XT text — a reader's record
+
+> **The format reference.** Siemens publish the *Parasolid XT Format Reference*
+> themselves; it is the authority on record layouts and field order. It is not
+> in this repository — it is their document and not ours to redistribute — so
+> fetch a copy and, if you want it beside these notes, drop it at
+> `docs/xt-reference.md`, which is ignored. Everything below is our own
+> reading: what the files actually contained, what that cost when we got it
+> wrong, and what the measurements said afterwards.
 
 Format knowledge for the `.x_t` compact transmit parser: everything below was
 reverse-engineered or measured, none of it is derivable from the code.

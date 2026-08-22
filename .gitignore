@@ -31,3 +31,8 @@ dist/
 
 # Render evidence. Generated, not source.
 renders/
+
+# Siemens' own XT format reference, if you keep a copy here. It is their
+# document, not ours to redistribute; docs/parasolid-xt-notes.md says where to
+# get it.
+docs/xt-reference.md
