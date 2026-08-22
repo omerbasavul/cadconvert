@@ -70,7 +70,11 @@ jobs:
           - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert_native.so }
           - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert_native.so }
           - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert_native.dylib }
-          - { rid: osx-x64,     os: macos-13,         lib: libcadconvert_native.dylib }
+          # Cross-built from Apple Silicon: GitHub's Intel Macs are scarce
+          # enough that this job once sat queued for over an hour while
+          # every other runtime finished in about one, and the job that
+          # packs the package waits on all of them.
+          - { rid: osx-x64,     os: macos-14,         lib: libcadconvert_native.dylib }
           - { rid: win-x64,     os: windows-latest,   lib: cadconvert_native.dll }
     steps:
       - uses: actions/checkout@v4
@@ -95,18 +99,52 @@ jobs:
       # rather than a panic through the ABI. That last one is the reason this
       # runs on every runtime rather than just one — unwinding is where
       # platforms differ.
+      # A cross-build that quietly produced the host's architecture would be
+      # staged under the right directory name, packed, shipped, and fail at the
+      # first P/Invoke on the machine it was meant for. Nothing else in the
+      # build would notice, so the file itself is asked.
+      - name: is the staged library the architecture it claims
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          file "runtimes/${{ matrix.rid }}/native/${{ matrix.lib }}"
+          case "${{ matrix.rid }}" in
+            *-x64)   want="x86_64" ;;
+            *-arm64) want="arm64\|aarch64" ;;
+          esac
+          file "runtimes/${{ matrix.rid }}/native/${{ matrix.lib }}" | grep -q "$want" \
+            || { echo "::error::${{ matrix.rid }} is not $want"; exit 1; }
+
+      # Only where the library can actually be loaded. osx-x64 is cross-built
+      # from Apple Silicon and the test host there cannot run it; the same
+      # library is exercised natively by the osx-arm64 job, and by every
+      # consumer of the package on an Intel Mac.
       - name: dotnet test
+        if: matrix.rid != 'osx-x64'
         run: dotnet test CadConvert.slnx -c Release --no-build -p:NativeRid=${{ matrix.rid }}
 
       - name: the command line, for the release artefacts
         working-directory: native
-        run: cargo build --release -p cad-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.rid }}" = "osx-x64" ]; then
+            rustup target add x86_64-apple-darwin
+            cargo build --release -p cad-cli --target x86_64-apple-darwin
+            echo "CARGO_OUT=target/x86_64-apple-darwin/release" >> "$GITHUB_ENV"
+          else
+            cargo build --release -p cad-cli
+            echo "CARGO_OUT=target/release" >> "$GITHUB_ENV"
+          fi
 
       # The C header is part of the contract, so it is compiled against rather
       # than trusted: a struct that drifts from the Rust side is a caller
       # reading the wrong bytes, and nothing else in the build would notice.
+      # Skipped where the library cannot run: a cross-built binary links but
+      # cannot be executed by this runner.
       - name: compile the C header against the built library (unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.rid != 'osx-x64'
         run: |
           cat > /tmp/abi_check.c <<'C'
           #include <stdio.h>
@@ -124,7 +162,7 @@ jobs:
           }
           C
           cc -I native/crates/cad-ffi/include -o /tmp/abi_check /tmp/abi_check.c \
-             -L native/target/release -lcadconvert_native -Wl,-rpath,"$PWD/native/target/release"
+             -L "native/$CARGO_OUT" -lcadconvert_native -Wl,-rpath,"$PWD/native/$CARGO_OUT"
           /tmp/abi_check
 
       - uses: actions/upload-artifact@v4
@@ -138,9 +176,9 @@ jobs:
         run: |
           mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp native/target/release/cadconvert.exe "dist/cadconvert-${{ matrix.rid }}.exe"
+            cp "native/$CARGO_OUT/cadconvert.exe" "dist/cadconvert-${{ matrix.rid }}.exe"
           else
-            cp native/target/release/cadconvert "dist/cadconvert-${{ matrix.rid }}"
+            cp "native/$CARGO_OUT/cadconvert" "dist/cadconvert-${{ matrix.rid }}"
           fi
 
       - uses: actions/upload-artifact@v4

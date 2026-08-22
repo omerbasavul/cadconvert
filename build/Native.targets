@@ -29,10 +29,15 @@
     <Error Condition="'$(NativeLibraryName)' == ''"
            Text="NativeRid is '$(NativeRid)', which names no platform this builds for (win-*, osx-*, linux-*)." />
     <Error Condition="!$(NativeRid.StartsWith('$(NativeRidHost)'))"
-           Text="NativeRid is '$(NativeRid)' but this machine builds '$(NativeRidHost)'. Cross-building is not set up; CI builds each runtime on its own machine. Pass -p:BuildNative=false if the library is already staged." />
+           Text="NativeRid is '$(NativeRid)' but this machine builds '$(NativeRidHost)'. Only macOS cross-builds here, and only between its own two architectures; CI builds the rest on their own machines. Pass -p:BuildNative=false if the library is already staged." />
+    <Error Condition="'$(CargoCrossBuild)' == 'true' AND '$(CargoTarget)' == ''"
+           Text="No Rust target triple is known for '$(NativeRid)'." />
     <Message Importance="high"
-             Text="cargo build --profile $(CargoProfile) -p cad-ffi   ($(NativeRid))" />
-    <Exec Command="cargo build --profile $(CargoProfile) -p cad-ffi --manifest-path &quot;$(NativeRoot)Cargo.toml&quot;"
+             Text="cargo build --profile $(CargoProfile) -p cad-ffi $(CargoTargetFlag)   ($(NativeRid))" />
+    <Exec Condition="'$(CargoCrossBuild)' == 'true'"
+          Command="rustup target add $(CargoTarget)"
+          WorkingDirectory="$(NativeRoot)" />
+    <Exec Command="cargo build --profile $(CargoProfile) -p cad-ffi $(CargoTargetFlag) --manifest-path &quot;$(NativeRoot)Cargo.toml&quot;"
           WorkingDirectory="$(NativeRoot)" />
     <Error Condition="!Exists('$(NativeLibraryBuilt)')"
            Text="cargo reported success but $(NativeLibraryBuilt) is not there." />

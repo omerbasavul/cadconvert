@@ -44,8 +44,40 @@
     <NativeRidHost Condition="$([MSBuild]::IsOSPlatform('Linux'))">linux</NativeRidHost>
   </PropertyGroup>
 
+  <!-- The Rust target triple for a runtime identifier, and whether cargo has
+       to be told about it.
+       ================================================================
+       macOS is the case that matters. GitHub's Intel runners are scarce enough
+       that an osx-x64 job sat queued for over an hour while every other
+       runtime finished in about one, and the job that packs the NuGet package
+       waits on all of them. An Apple Silicon runner cross-builds x86_64
+       without ceremony: one rustup target and one flag, so both macOS
+       runtimes come off the same machine.
+
+       This is also the one place a mistake is invisible. With no target flag,
+       cargo on an arm64 machine asked for osx-x64 builds arm64 and the result
+       is staged under runtimes/osx-x64/native, packed, shipped, and fails at
+       the first P/Invoke on the Intel Mac it was meant for. So the triple is
+       derived here rather than assumed, and the output directory moves with
+       it: cargo writes a cross-build to target/<triple>/<profile>. -->
   <PropertyGroup>
-    <NativeLibraryBuilt>$(NativeRoot)target/$(CargoOutputDir)/$(NativeLibraryName)</NativeLibraryBuilt>
+    <CargoTarget Condition="'$(NativeRid)' == 'osx-arm64'">aarch64-apple-darwin</CargoTarget>
+    <CargoTarget Condition="'$(NativeRid)' == 'osx-x64'">x86_64-apple-darwin</CargoTarget>
+    <CargoTarget Condition="'$(NativeRid)' == 'linux-arm64'">aarch64-unknown-linux-gnu</CargoTarget>
+    <CargoTarget Condition="'$(NativeRid)' == 'linux-x64'">x86_64-unknown-linux-gnu</CargoTarget>
+    <CargoTarget Condition="'$(NativeRid)' == 'win-x64'">x86_64-pc-windows-msvc</CargoTarget>
+    <CargoTarget Condition="'$(NativeRid)' == 'win-arm64'">aarch64-pc-windows-msvc</CargoTarget>
+
+    <!-- Only macOS is cross-built. A Linux or Windows cross-build needs a
+         linker and a sysroot for the other architecture, which CI has no
+         reason to assemble when it has a native runner for each. -->
+    <CargoCrossBuild Condition="'$(NativeRidHost)' == 'osx' AND '$(NativeRid)' != '$(NETCoreSdkRuntimeIdentifier)'">true</CargoCrossBuild>
+    <CargoTargetFlag Condition="'$(CargoCrossBuild)' == 'true'">--target $(CargoTarget)</CargoTargetFlag>
+    <CargoTargetDir Condition="'$(CargoCrossBuild)' == 'true'">$(CargoTarget)/</CargoTargetDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NativeLibraryBuilt>$(NativeRoot)target/$(CargoTargetDir)$(CargoOutputDir)/$(NativeLibraryName)</NativeLibraryBuilt>
     <NativeLibraryStaged>$(RuntimesRoot)$(NativeRid)/native/$(NativeLibraryName)</NativeLibraryStaged>
   </PropertyGroup>
 
