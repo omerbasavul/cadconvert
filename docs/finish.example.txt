@@ -1,0 +1,16 @@
+# The finish of each colour in 910 2001 007, as the Parasolid twin states it.
+# Read once from the twin; after this the STEP converts on its own.
+color 808080 = Toz Boya
+color 81888C = Toz Boya
+color 778888 = Toz Boya
+color 777788 = Toz Boya
+color 555555 = Toz Boya
+color 333333 = Toz Boya
+color 30BF94 = Toz Boya
+color 22BB88 = Toz Boya
+color 0033BB = Toz Boya
+color CC0000 = Toz Boya
+color D1D1D1 = 6061 Alloy
+color 555759 = AISI 1020
+color 000000 = EPDM
+color 1F1F1F = EPDM

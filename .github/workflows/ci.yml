@@ -1,0 +1,219 @@
+# Test on every platform we ship a runtime for, then build those runtimes and
+# pack them into one NuGet package.
+#
+# `dotnet build` builds the Rust side too — see build/Native.targets — so the
+# entry point here is the .NET one everywhere except the Rust test run, which
+# has no .NET equivalent.
+#
+# The package is only useful if it carries a native library for the machine it
+# lands on, and a machine can only build its own. So the runtimes are built in
+# parallel, uploaded, and collected by a single pack job, which is told not to
+# rebuild any of them.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning is a defect that has not been read yet. The workspace builds
+  # clean; keep it that way.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: native
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      # The gate is what this workspace actually holds itself to: it builds
+      # with no compiler warnings — examples included, since that is where the
+      # measuring tools live — and every test passes.
+      - name: build, warnings and all
+        run: cargo build --release --workspace --all-targets
+      - name: cargo test
+        run: cargo test --release --workspace
+
+      # rustfmt and clippy are read, not obeyed. The codebase predates both as
+      # gates — 511 formatting differences and 41 lints — and reformatting it
+      # wholesale would bury every real change in noise. Shown so they can be
+      # worked down deliberately, and not allowed to fail the build until they
+      # are.
+      - name: rustfmt (advisory)
+        continue-on-error: true
+        run: cargo fmt --all --check
+      - name: clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --release --workspace --all-targets -- -W clippy::all
+
+  native:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert.so }
+          - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert.so }
+          - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert.dylib }
+          - { rid: osx-x64,     os: macos-13,         lib: libcadconvert.dylib }
+          - { rid: win-x64,     os: windows-latest,   lib: cadconvert.dll }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      # This is the whole point of the .NET-first layout: one command, and the
+      # native library is built and staged where the package expects it.
+      # `NativeRid` is passed so the workflow and MSBuild agree on the name.
+      - name: dotnet build (which builds the native library)
+        run: dotnet build CadConvert.slnx -c Release -p:NativeRid=${{ matrix.rid }}
+
+      - name: the command line, for the release artefacts
+        working-directory: native
+        run: cargo build --release -p cad-cli
+
+      # The C header is part of the contract, so it is compiled against rather
+      # than trusted: a struct that drifts from the Rust side is a caller
+      # reading the wrong bytes, and nothing else in the build would notice.
+      - name: compile the C header against the built library (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cat > /tmp/abi_check.c <<'C'
+          #include <stdio.h>
+          #include "cadconvert.h"
+          int main(void) {
+              cadconvert_options o;
+              cadconvert_default_options(&o);
+              printf("cadconvert %s target=%d twin=%d\n",
+                     cadconvert_version(), o.target, o.use_parasolid_twin);
+              cadconvert_summary s;
+              char *m = NULL;
+              int code = cadconvert_convert("no-such-file.x_t", "/tmp/out.glb", &o, &s, &m);
+              if (m) { printf("says: %s\n", m); cadconvert_string_free(m); }
+              return code == CADCONVERT_OK ? 1 : 0;   /* it must fail, and say why */
+          }
+          C
+          cc -I native/crates/cad-ffi/include -o /tmp/abi_check /tmp/abi_check.c \
+             -L native/target/release -lcadconvert -Wl,-rpath,"$PWD/native/target/release"
+          /tmp/abi_check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.rid }}
+          path: runtimes/${{ matrix.rid }}/native/*
+          if-no-files-found: error
+
+      - name: name the command line for its platform
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp native/target/release/cadconvert.exe "dist/cadconvert-${{ matrix.rid }}.exe"
+          else
+            cp native/target/release/cadconvert "dist/cadconvert-${{ matrix.rid }}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cadconvert-${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+
+  pack:
+    name: nuget
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: collect every runtime
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: staged
+
+      # `download-artifact` gives one directory per artifact, named after it —
+      # `staged/runtime-linux-x64/libcadconvert.so`. The package wants
+      # `runtimes/linux-x64/native/libcadconvert.so`.
+      - name: put them where the package looks
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for dir in staged/runtime-*; do
+            rid="${dir#staged/runtime-}"
+            mkdir -p "runtimes/$rid/native"
+            cp "$dir"/* "runtimes/$rid/native/"
+            echo "  $rid: $(ls "runtimes/$rid/native")"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "no runtimes arrived; the package would fail at the first P/Invoke" >&2
+            exit 1
+          fi
+          echo "$found runtimes staged"
+
+      # Every runtime is already built and staged, so the native build is off:
+      # this machine could only rebuild its own, and would overwrite nothing
+      # useful while needing a Rust toolchain to do it.
+      - name: pack
+        run: dotnet pack src/CadConvert -c Release -o dist -p:BuildNative=false
+
+      # A package that builds is not a package that loads. Restoring it into a
+      # fresh app and running it is the only check that the `runtimes/` layout
+      # is right — getting it wrong produces no build error at all.
+      - name: restore it into a fresh app and call it
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          dotnet new console -o app --force >/dev/null
+          cat > app/nuget.config <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="DIST" />
+              <add key="nuget" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          XML
+          sed -i "s|DIST|$GITHUB_WORKSPACE/dist|" app/nuget.config
+          cat > app/Program.cs <<'CS'
+          using CadConvert;
+          Console.WriteLine($"native cadconvert {CadConverter.NativeVersion}");
+          try { CadConverter.Convert("no-such-file.x_t", "/tmp/out.glb"); }
+          catch (CadConvertException e) { Console.WriteLine($"refused as it should: {e.Message}"); return 0; }
+          Console.Error.WriteLine("a missing file was not refused");
+          return 1;
+          CS
+          cd app && dotnet add package CadConvert --prerelease >/dev/null
+          dotnet run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: dist/*.nupkg
+          if-no-files-found: error

@@ -1,0 +1,96 @@
+# On a tag, build every runtime, pack the NuGet, and attach the command line
+# for each platform to the release.
+#
+# The package is not pushed automatically. Publishing is irreversible — a
+# version on nuget.org cannot be replaced, only delisted — so the artefact is
+# built and attached here and the push is a deliberate act with a key.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert.so }
+          - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert.so }
+          - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert.dylib }
+          - { rid: osx-x64,     os: macos-13,         lib: libcadconvert.dylib }
+          - { rid: win-x64,     os: windows-latest,   lib: cadconvert.dll }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: cargo test --release --workspace
+        working-directory: native
+      - name: dotnet build, which builds the native library too
+        run: dotnet build CadConvert.slnx -c Release -p:NativeRid=${{ matrix.rid }}
+      - run: cargo build --release -p cad-cli
+        working-directory: native
+      - shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp native/target/release/cadconvert.exe "dist/cadconvert-${{ matrix.rid }}.exe"
+          else
+            cp native/target/release/cadconvert "dist/cadconvert-${{ matrix.rid }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: 'runtime-${{ matrix.rid }}', path: 'runtimes/${{ matrix.rid }}/native/*', if-no-files-found: error }
+      - uses: actions/upload-artifact@v4
+        with: { name: 'cadconvert-${{ matrix.rid }}', path: 'dist/*', if-no-files-found: error }
+
+  release:
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'runtime-*', path: staged }
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'cadconvert-*', path: binaries }
+
+      - name: stage the runtimes, and refuse to ship without all five
+        run: |
+          set -euo pipefail
+          want="linux-x64 linux-arm64 osx-arm64 osx-x64 win-x64"
+          for rid in $want; do
+            if [ ! -d "staged/runtime-$rid" ]; then
+              echo "no native library for $rid; the package would fail there at the first call" >&2
+              exit 1
+            fi
+            mkdir -p "runtimes/$rid/native"
+            cp staged/runtime-$rid/* "runtimes/$rid/native/"
+          done
+          echo "all five runtimes staged"
+
+      - name: version the package from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "packing $version"
+          dotnet pack src/CadConvert -c Release -o dist \
+            -p:Version="$version" -p:BuildNative=false
+
+      - name: attach everything to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.nupkg
+            binaries/*/*
+          generate_release_notes: true
