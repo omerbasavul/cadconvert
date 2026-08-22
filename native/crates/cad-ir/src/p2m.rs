@@ -65,6 +65,24 @@ pub struct Appearance {
     /// true metals do — 41 of the 619.
     pub metallic: bool,
     pub ior: Option<f64>,
+    /// `color_texname`: the image the finish is coloured by, as a path
+    /// relative to the SolidWorks data root, normalised — lower case, forward
+    /// slashes, no `..`. 229 of the 619 name one.
+    pub colour_texture: Option<String>,
+    /// A tangent-space normal map. `bumpTexture` with `bumpIsNormalMap on`,
+    /// which is 156 files and always an `_n.dds` under `shaders/surfacefinish`.
+    pub normal_texture: Option<String>,
+    /// A height map, where that is all the file offers: `bump_file_texture`
+    /// pointing at a grey `*bump.jpg`. Not a normal map, and not
+    /// interchangeable with one.
+    pub height_texture: Option<String>,
+    /// `bumpStrength`, in metres of relief. Almost always 0.001.
+    pub bump_strength: f64,
+    /// `initTextureWidth` and `initTextureHeight`: the physical size of one
+    /// tile, in metres. Powder coat is 6.35 mm. This is what makes a texture
+    /// the right size on a part rather than stretched across it, and it is the
+    /// reason texture coordinates have to be generated at world scale.
+    pub tile_metres: Option<[f64; 2]>,
 }
 
 /// A surface that reflects sharply, in glTF's terms.
@@ -157,13 +175,59 @@ pub fn representative(class: MaterialClass, matte: bool) -> Option<&'static str>
     }
 }
 
+/// A texture path as the file writes it, made into something that can be
+/// looked up: lower case, forward slashes, and `..` resolved. The files mix
+/// separators within a single path — `images\\shaders\\../textures/...` is
+/// theirs, not a typo — and mix case between `Images` and `images`.
+fn texture_path(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_matches('"');
+    if raw.is_empty() {
+        return None;
+    }
+    let lowered = raw.replace('\\', "/").to_lowercase();
+    let mut parts: Vec<&str> = Vec::new();
+    for part in lowered.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 fn parse(path: &str, text: &str) -> Appearance {
     let mut a = Appearance {
         path: path.to_string(),
+        diffuse_factor: 1.0,
         ..Default::default()
     };
+    // `bumpTexture` names a normal map only when the file says so; otherwise
+    // the same key is a height map. Both are read, and the decision is made
+    // once at the end, because the two lines can arrive in either order.
+    let mut bump_texture = None;
+    let mut bump_is_normal_map = false;
+    let mut bump_file_texture = None;
+    let mut tile = [None, None];
+
     for line in text.lines() {
         let line = line.trim();
+        // `color texture "color_texname" "Images\\textures\\..."` — the one
+        // line in the format that does not begin with a quoted key, which is
+        // why every texture in the library went unread.
+        if let Some(rest) = line.strip_prefix("color texture ") {
+            let mut quoted = rest.split('"').skip(1).step_by(2);
+            if let (Some(key), Some(value)) = (quoted.next(), quoted.next()) {
+                match key {
+                    "color_texname" => a.colour_texture = texture_path(value),
+                    "bump_file_texture" => bump_file_texture = texture_path(value),
+                    _ => {}
+                }
+            }
+            continue;
+        }
         let Some(rest) = line.strip_prefix('"') else { continue };
         let Some(end) = rest.find('"') else { continue };
         let (key, value) = (&rest[..end], rest[end + 1..].trim());
@@ -178,6 +242,11 @@ fn parse(path: &str, text: &str) -> Appearance {
             "blurryReflections" => a.blurry = value.starts_with("on"),
             "sw_shader" => a.shader = value.trim_matches('"').to_lowercase(),
             "metallic_color" | "metallic_ior" => a.metallic = true,
+            "bumpTexture" => bump_texture = texture_path(value),
+            "bumpIsNormalMap" => bump_is_normal_map = value.starts_with("on"),
+            "bumpStrength" => a.bump_strength = number().unwrap_or(0.0),
+            "initTextureWidth" => tile[0] = number(),
+            "initTextureHeight" => tile[1] = number(),
             "col1" => {
                 let v: Vec<f32> = value.split_whitespace().filter_map(|t| t.parse().ok()).collect();
                 if let [r, g, b] = v[..] {
@@ -185,6 +254,24 @@ fn parse(path: &str, text: &str) -> Appearance {
                 }
             }
             _ => {}
+        }
+    }
+
+    // A normal map is only a normal map when the file says it is. Where both
+    // keys name a file they usually name the same one (113 of 135); where they
+    // differ, `bumpTexture` is the normal map under `shaders/surfacefinish`
+    // and `bump_file_texture` is a grey height map beside the colour image.
+    if bump_is_normal_map {
+        a.normal_texture = bump_texture.clone();
+    }
+    if a.normal_texture.is_none() {
+        a.height_texture = bump_file_texture.or(bump_texture);
+    } else {
+        a.height_texture = bump_file_texture.filter(|f| Some(f) != a.normal_texture.as_ref());
+    }
+    if let [Some(w), Some(h)] = tile {
+        if w > 0.0 && h > 0.0 {
+            a.tile_metres = Some([w, h]);
         }
     }
     a
@@ -226,6 +313,96 @@ mod tests {
         let brushed = lib.get("metal/chrome/brushed chromium").expect("brushed chromium");
         assert!(brushed.blurry);
         assert!((brushed.roughness() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_library_names_the_textures_it_was_measured_to_name() {
+        let lib = AppearanceLibrary::bundled();
+        let count = |f: fn(&Appearance) -> bool| lib.appearances.values().filter(|a| f(a)).count();
+
+        // Surveyed over the bundled tree before any of this was written. They
+        // are here so that a change to the parsing has to explain itself
+        // against the corpus rather than against one file.
+        assert_eq!(count(|a| a.colour_texture.is_some()), 229);
+        // 139, not the 156 that carry `bumpIsNormalMap on`. The other 17 set
+        // the flag and leave `bumpTexture` empty, so it describes a field that
+        // is not there; what they do name is a `*bump.jpg` beside the colour
+        // image. Two of those were measured to be pure greyscale — chroma 0.0
+        // — which is a height map. A normal map is blue: around 128/128/255.
+        assert_eq!(count(|a| a.normal_texture.is_some()), 139);
+        assert_eq!(count(|a| a.tile_metres.is_some()), 483);
+
+        // Every path a file names resolves to somewhere inside the library's
+        // own image tree, with one exception that names a root this install
+        // does not have.
+        let outside = lib
+            .appearances
+            .values()
+            .flat_map(|a| [&a.colour_texture, &a.normal_texture, &a.height_texture])
+            .flatten()
+            .filter(|p| !p.starts_with("images/"))
+            .count();
+        assert_eq!(outside, 1, "only `SystemTexture/...` sits elsewhere");
+    }
+
+    #[test]
+    fn powder_coat_brings_its_own_grain() {
+        // The finish most of a painted assembly is delivered in, and the one
+        // that makes this worth doing: a colour image and a real tangent-space
+        // normal map, tiled every 6.35 mm.
+        let lib = AppearanceLibrary::bundled();
+        let p = lib.get("painted/powder coat/dark powdercoat").expect("powder coat");
+
+        assert_eq!(
+            p.colour_texture.as_deref(),
+            Some("images/textures/painted/powdercoat_dark.jpg")
+        );
+        assert_eq!(
+            p.normal_texture.as_deref(),
+            Some("images/shaders/surfacefinish/powdercoat_n.dds")
+        );
+        // The same file is also listed as bump_file_texture. It is one map, not
+        // two, and it must not be counted twice.
+        assert_eq!(p.height_texture, None);
+
+        let [w, h] = p.tile_metres.expect("a tile size");
+        assert!((w - 0.00635).abs() < 1e-9 && (h - 0.00635).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_path_the_file_writes_is_made_into_one_that_can_be_looked_up() {
+        // Mixed separators inside a single path, a parent step in the middle,
+        // and inconsistent case — all three occur in the bundled tree.
+        assert_eq!(
+            texture_path(r"Images\shaders\../textures/organic/wood/oak/UNFINISHED oak.jpg"),
+            Some("images/textures/organic/wood/oak/unfinished oak.jpg".into())
+        );
+        assert_eq!(texture_path(""), None);
+        assert_eq!(texture_path("\"\""), None);
+    }
+
+    #[test]
+    fn a_height_map_is_not_promoted_to_a_normal_map() {
+        // 22 files name a normal map and a height map that are different
+        // images. The normal map is the one under shaders/surfacefinish.
+        let lib = AppearanceLibrary::bundled();
+        let carpet = lib.get("fabric/carpet/carpet color1 2d").expect("carpet");
+        assert_eq!(
+            carpet.normal_texture.as_deref(),
+            Some("images/shaders/surfacefinish/carpet1_n.dds")
+        );
+        assert_eq!(
+            carpet.height_texture.as_deref(),
+            Some("images/textures/fabric/carpet/carpet color1 bump.jpg")
+        );
+
+        // And a file that offers only a height map keeps it as one.
+        let held_as_height = lib
+            .appearances
+            .values()
+            .filter(|a| a.normal_texture.is_none() && a.height_texture.is_some())
+            .count();
+        assert!(held_as_height > 0);
     }
 
     #[test]
