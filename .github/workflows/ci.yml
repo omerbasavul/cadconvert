@@ -88,6 +88,16 @@ jobs:
       - name: dotnet build (which builds the native library)
         run: dotnet build CadConvert.slnx -c Release -p:NativeRid=${{ matrix.rid }}
 
+      # The Rust tests above cover the readers and the tessellator. These cover
+      # the crossing: that the library loads at all from where it was staged,
+      # that a non-ASCII path survives the marshalling, that every error code
+      # arrives as itself, and that a malformed part comes back as an exception
+      # rather than a panic through the ABI. That last one is the reason this
+      # runs on every runtime rather than just one — unwinding is where
+      # platforms differ.
+      - name: dotnet test
+        run: dotnet test CadConvert.slnx -c Release --no-build -p:NativeRid=${{ matrix.rid }}
+
       - name: the command line, for the release artefacts
         working-directory: native
         run: cargo build --release -p cad-cli

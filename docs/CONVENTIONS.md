@@ -12,7 +12,7 @@ including the Rust side.
 ```
 CadConvert.slnx    the solution
 src/CadConvert/    the NuGet package
-tests/             its smoke test
+tests/             the .NET test suite: the ABI crossing, not the geometry
 bench/             the benchmark: time and peak resident memory, per platform
 build/             Native.props (where the library is) and Native.targets (how
                    to build it)

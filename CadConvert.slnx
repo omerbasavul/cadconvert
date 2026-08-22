@@ -6,6 +6,6 @@
     <Project Path="src/CadConvert/CadConvert.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/CadConvert.Smoke/CadConvert.Smoke.csproj" />
+    <Project Path="tests/CadConvert.Tests/CadConvert.Tests.csproj" />
   </Folder>
 </Solution>

@@ -3974,7 +3974,7 @@ thing that has to be true of every build is that the package works:
 
 ```
 CadConvert.slnx    the container
-src/, tests/       the .NET package and its smoke test
+src/, tests/       the .NET package and its test suite
 build/             Native.props (where the library is) and Native.targets (how
                    to build it)
 native/            the Rust workspace — Cargo.toml and crates/
@@ -3995,7 +3995,7 @@ Three things that had to be got right:
   with nothing changed takes **1.2 seconds**, most of it MSBuild's own
   start-up. The risk of making `dotnet build` do everything is that it slows
   the loop; it does not.
-* **Only one project may run cargo.** Both the library and the smoke test
+* **Only one project may run cargo.** Both the library and the test suite
   imported `Native.targets` at first, and cargo ran twice per build. The file
   is now split: `Native.props` says *where* the library is and anything may
   import it; `Native.targets` says *how to build it* and only the library

@@ -3,12 +3,19 @@
   <!-- Only where the library is, not how to build it: the project reference
        below makes the library project build and stage it first. -->
   <Import Project="$(MSBuildThisFileDirectory)../../build/Native.props" />
+
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <AssemblyName>smoke</AssemblyName>
-    <RootNamespace>CadConvert.Smoke</RootNamespace>
+    <RootNamespace>CadConvert.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="../../src/CadConvert/CadConvert.csproj" />
     <!-- A project reference does not carry a NuGet package's runtimes/ layout,
@@ -19,5 +26,11 @@
           CopyToOutputDirectory="PreserveNewest"
           Visible="false"
           Condition="Exists('$(NativeLibraryStaged)')" />
+    <!-- One sample, shared with the Rust robustness test rather than copied,
+         so the two sides can never drift on to different bytes. -->
+    <None Include="../../native/crates/cad-convert/tests/samples/small.x_t"
+          Link="samples/small.x_t"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
 </Project>
