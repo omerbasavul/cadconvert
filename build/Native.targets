@@ -22,6 +22,14 @@
   <Import Project="$(MSBuildThisFileDirectory)Native.props" />
 
   <Target Name="BuildNativeLibrary" Condition="'$(BuildNative)' != 'false'">
+    <!-- cargo here builds for this machine and no other. Being asked for a
+         different platform's runtime means someone expects a cross-build that
+         is not set up, and the result would be a correctly named directory
+         holding the wrong library. Say so rather than produce it. -->
+    <Error Condition="'$(NativeLibraryName)' == ''"
+           Text="NativeRid is '$(NativeRid)', which names no platform this builds for (win-*, osx-*, linux-*)." />
+    <Error Condition="!$(NativeRid.StartsWith('$(NativeRidHost)'))"
+           Text="NativeRid is '$(NativeRid)' but this machine builds '$(NativeRidHost)'. Cross-building is not set up; CI builds each runtime on its own machine. Pass -p:BuildNative=false if the library is already staged." />
     <Message Importance="high"
              Text="cargo build --profile $(CargoProfile) -p cad-ffi   ($(NativeRid))" />
     <Exec Command="cargo build --profile $(CargoProfile) -p cad-ffi --manifest-path &quot;$(NativeRoot)Cargo.toml&quot;"

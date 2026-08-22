@@ -24,14 +24,24 @@
     <NativeRid Condition="'$(NativeRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</NativeRid>
   </PropertyGroup>
 
-  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <NativeLibraryName>cadconvert.dll</NativeLibraryName>
+  <!-- What the library is called follows the runtime identifier, not the
+       machine. The two are the same thing whenever cargo is really building —
+       it produces this host's library and nothing else — but reading the
+       machine would let `-p:NativeRid=win-x64` on a Mac stage a .dylib under
+       `runtimes/win-x64/native/`. That packs without complaint and fails at
+       the first P/Invoke, which is the failure this whole file exists to
+       prevent. Naming from the RID makes the mismatch impossible, and the
+       check below makes it loud. -->
+  <PropertyGroup>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('win'))">cadconvert.dll</NativeLibraryName>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('osx'))">libcadconvert.dylib</NativeLibraryName>
+    <NativeLibraryName Condition="$(NativeRid.StartsWith('linux'))">libcadconvert.so</NativeLibraryName>
   </PropertyGroup>
-  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-    <NativeLibraryName>libcadconvert.dylib</NativeLibraryName>
-  </PropertyGroup>
-  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
-    <NativeLibraryName>libcadconvert.so</NativeLibraryName>
+
+  <PropertyGroup>
+    <NativeRidHost Condition="$([MSBuild]::IsOSPlatform('Windows'))">win</NativeRidHost>
+    <NativeRidHost Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx</NativeRidHost>
+    <NativeRidHost Condition="$([MSBuild]::IsOSPlatform('Linux'))">linux</NativeRidHost>
   </PropertyGroup>
 
   <PropertyGroup>
