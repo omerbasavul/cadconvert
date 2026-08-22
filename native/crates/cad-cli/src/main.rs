@@ -38,6 +38,10 @@ cadconvert — Parasolid (.x_t) and STEP (.stp) to glTF binary or USDZ
                                        in millimetres instead.
       --angle <deg>                    largest angle between adjacent facet
                                        normals (default: 8)
+      --usd-text                       write USD in its text form. Same scene,
+                                       about three times the size; useful when
+                                       a reader disagrees with the writer and
+                                       you want to read the file yourself.
       --materials <file>               a table of colour and part-number rules,
                                        which outranks every guess below it. It
                                        is also how a STEP is given the finish
@@ -80,6 +84,7 @@ fn run() -> Result<(), String> {
     // An earlier version of this program invented 0.05 mm and 20° here, which
     // is eight times coarser and left 607 open half-edges in the pilot — the
     // converter's defaults must not be the one place the mesh is filed down.
+    let mut usd_text = false;
     let mut sag: Option<f64> = None;
     let mut angle_deg: Option<f64> = None;
     let mut stop_after: Option<Phase> = None;
@@ -117,6 +122,9 @@ fn run() -> Result<(), String> {
                 }
                 options.materials.table = table;
             }
+            "--usd-text" => {
+                usd_text = true;
+            }
             "--no-twin" => options.use_parasolid_twin = false,
             "--stop-after" => {
                 stop_after = Some(match value()?.as_str() {
@@ -139,6 +147,7 @@ fn run() -> Result<(), String> {
     let output = output
         .unwrap_or_else(|| input.with_extension(options.target.extension()));
 
+    options.usd_text = usd_text;
     if let Some(mm) = sag {
         // A number in millimetres is absolute; the default is a fraction.
         options.quality.linear_deflection = mm;

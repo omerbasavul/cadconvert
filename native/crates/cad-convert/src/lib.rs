@@ -115,6 +115,9 @@ pub struct Options {
     /// A Parasolid twin of a STEP file carries per-face reflectivity the STEP
     /// dropped. Looked for beside the input as `<stem>.x_t` unless this is off.
     pub use_parasolid_twin: bool,
+    /// Write USD in its text form rather than its binary one. Only reaches a
+    /// USDZ; glTF has one encoding.
+    pub usd_text: bool,
 }
 
 impl Default for Options {
@@ -124,6 +127,7 @@ impl Default for Options {
             target: Target::default(),
             materials: cad_ir::MaterialResolver::default(),
             use_parasolid_twin: true,
+            usd_text: false,
         }
     }
 }
@@ -225,6 +229,7 @@ pub fn convert(input: &Path, output: &Path, options: &Options) -> Result<Summary
             // given.
             Target::Glb | Target::Usdz => cad_export::Compression::None,
         },
+        usd_text: options.usd_text,
         ..cad_export::Options::default()
     };
     let written = match target {

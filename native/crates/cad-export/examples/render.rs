@@ -1,7 +1,8 @@
 //! Rasterise a mesh to a PNG, so the result can be looked at.
 //!
 //! `cargo run --release -p cad-export --example render -- file.glb|file.obj out.png \
-//!      [--size WxH] [--yaw DEG] [--pitch DEG] [--zoom F] [--at X,Y,Z] [--part NAME]`
+//!      [--size WxH] [--yaw DEG] [--pitch DEG] [--zoom F] [--at X,Y,Z] [--part NAME] \
+//!      [--no-textures]`
 //!
 //! Every measurement in this project answers a question about the mesh; none of
 //! them answers "does it look right". This does, offline and with no viewer in
@@ -118,6 +119,9 @@ struct Args {
     part: Option<String>,
     /// Ignore the file's materials and draw everything in one neutral grey.
     grey: bool,
+    /// Keep the materials but drop their images, so the same mesh can be seen
+    /// with and without its grain and relief and nothing else differs.
+    no_textures: bool,
     /// True when the file calls Z up, as an OBJ from a CAD kernel usually
     /// does, so two writers can be framed the same way.
     z_up: bool,
@@ -139,8 +143,13 @@ fn parse_args() -> Option<Args> {
         part: None,
         z_up: false,
         grey: false,
+        no_textures: false,
     };
     while let Some(flag) = it.next() {
+        if flag == "--no-textures" {
+            a.no_textures = true;
+            continue;
+        }
         if flag == "--grey" || flag == "--gray" {
             a.grey = true;
             continue;
@@ -191,6 +200,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for v in &mut t.at {
                 *v = [v[0], v[2], -v[1]];
             }
+        }
+    }
+    if args.no_textures {
+        for t in &mut tris {
+            t.uv = None;
+            t.maps = None;
         }
     }
     if args.grey {

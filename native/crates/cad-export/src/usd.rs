@@ -58,24 +58,34 @@ pub fn write_bytes(scene: &Scene, options: &Options) -> Result<Vec<u8>> {
         .map(|(i, image)| format!("textures/{i}.{}", image.mime.extension()))
         .collect();
 
-    let usda = write_usda(scene, options, &image_paths);
+    // The crate encoding unless something asks for the text one. A USDZ may
+    // not compress anything, so the difference between the two is the
+    // difference in the file: the pilot is 172 MB as text.
+    let (name, bytes) = if options.usd_text {
+        (default_file_name(scene, "usda"), write_usda(scene, options, &image_paths).into_bytes())
+    } else {
+        (
+            default_file_name(scene, "usdc"),
+            crate::usdc::write_scene(scene, options, &image_paths),
+        )
+    };
 
     // The USD file must be the archive's first entry: that is how a reader
     // knows which of the files in the package is the scene.
-    package.add(default_file_name(scene), usda.into_bytes());
+    package.add(name, bytes);
     for (image, path) in scene.images.iter().zip(&image_paths) {
         package.add(path.clone(), image.bytes.clone());
     }
     Ok(package.finish())
 }
 
-fn default_file_name(scene: &Scene) -> String {
+fn default_file_name(scene: &Scene, extension: &str) -> String {
     let stem = Path::new(&scene.meta.source)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "scene".into());
-    format!("{}.usda", sanitise(&stem))
+    format!("{}.{extension}", sanitise(&stem))
 }
 
 /// A USD prim name: alphanumerics and underscores, never starting with a digit.
@@ -83,7 +93,7 @@ fn default_file_name(scene: &Scene) -> String {
 /// Applied to body names out of CAD files, which carry spaces, dots and
 /// part numbers that begin with a digit — `910 2001 007` is a prim called
 /// `_910_2001_007`.
-fn sanitise(raw: &str) -> String {
+pub(crate) fn sanitise(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for c in raw.chars() {
         out.push(if c.is_ascii_alphanumeric() { c } else { '_' });
@@ -99,12 +109,12 @@ fn sanitise(raw: &str) -> String {
 
 /// Names unique within one prim's children, the way [`Names`] is for glTF.
 #[derive(Default)]
-struct Names {
+pub(crate) struct Names {
     seen: std::collections::HashMap<String, u32>,
 }
 
 impl Names {
-    fn unique(&mut self, raw: &str) -> String {
+    pub(crate) fn unique(&mut self, raw: &str) -> String {
         let base = sanitise(raw);
         let n = self.seen.entry(base.clone()).or_insert(0);
         *n += 1;
@@ -420,7 +430,7 @@ impl std::fmt::Display for Repeat {
     }
 }
 
-fn material_name(scene: &Scene, index: u32) -> String {
+pub(crate) fn material_name(scene: &Scene, index: u32) -> String {
     scene
         .materials
         .get(index as usize)
@@ -872,15 +882,25 @@ mod tests {
         }
     }
 
+    /// The text encoding, which is what the tests below are about. The
+    /// default is the binary one; see [`crate::usdc`].
+    fn text() -> Options {
+        Options { usd_text: true, ..Options::default() }
+    }
+
     #[test]
     fn the_usd_file_comes_first_and_names_the_scene() {
-        let bytes = write_bytes(&scene(), &Options::default()).unwrap();
-        let found = entries(&bytes);
-        assert!(
-            found[0].0.ends_with(".usda"),
-            "a reader takes the first file as the scene, got {}",
-            found[0].0
-        );
+        // Whichever encoding, the scene is the archive's first entry: that is
+        // how a reader knows which of the files in the package it is.
+        for (options, extension) in [(Options::default(), ".usdc"), (text(), ".usda")] {
+            let bytes = write_bytes(&scene(), &options).unwrap();
+            let found = entries(&bytes);
+            assert!(
+                found[0].0.ends_with(extension),
+                "expected {extension} first, got {}",
+                found[0].0
+            );
+        }
     }
 
     #[test]
@@ -891,22 +911,77 @@ mod tests {
         assert_eq!(sanitise("body.1-a"), "body_1_a");
         assert_eq!(sanitise(""), "_");
 
-        let bytes = write_bytes(&scene(), &Options::default()).unwrap();
-        let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("def Mesh \"_910_2001_007\""));
+        let bytes = write_bytes(&scene(), &text()).unwrap();
+        let written = String::from_utf8_lossy(&bytes);
+        assert!(written.contains("def Mesh \"_910_2001_007\""));
     }
 
     #[test]
     fn one_mesh_stands_behind_both_placements() {
-        let bytes = write_bytes(&scene(), &Options::default()).unwrap();
-        let text = String::from_utf8_lossy(&bytes);
-        assert_eq!(text.matches("def Mesh ").count(), 1, "the mesh is written once");
+        // The text encoding instances; the binary one writes the mesh at each
+        // placement, because a reference is a composition arc whose encoding
+        // has not been read off a file yet. See [`crate::usdc::scene`].
+        let bytes = write_bytes(&scene(), &text()).unwrap();
+        let written = String::from_utf8_lossy(&bytes);
+        assert_eq!(written.matches("def Mesh ").count(), 1, "the mesh is written once");
         assert_eq!(
-            text.matches("prepend references = </Prototypes/_910_2001_007>").count(),
+            written.matches("prepend references = </Prototypes/_910_2001_007>").count(),
             2,
             "and referenced by both nodes"
         );
-        assert_eq!(text.matches("instanceable = true").count(), 2);
+        assert_eq!(written.matches("instanceable = true").count(), 2);
+    }
+
+    #[test]
+    fn the_binary_encoding_is_the_default_and_is_smaller() {
+        // On anything with a mesh in it. The crate format carries a token
+        // table, six sections and a table of contents whatever the scene, so
+        // on a single triangle it loses — 2 542 bytes against 1 649 — and the
+        // two cross somewhere in the low hundreds of triangles. What matters
+        // is which side a real part falls on: the pilot assembly is 50 MB
+        // binary against 172 MB text.
+        let mut s = Scene::default();
+        s.add_material(Material::from_class(MaterialClass::Steel, "steel"));
+        let mut mesh = Mesh {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            parts: Vec::new(),
+        };
+        for i in 0..2_000u32 {
+            let x = i as f32 * 0.37;
+            mesh.positions
+                .extend_from_slice(&[[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]]);
+            mesh.normals.extend_from_slice(&[[0.0, 0.0, 1.0]; 3]);
+            let base = i * 3;
+            mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+        mesh.parts = vec![MeshPart { material: 0, start: 0, count: 6_000 }];
+        let g = s.add_geometry(Geometry {
+            name: "plate".into(),
+            brep: None,
+            mesh: Some(mesh),
+            material: None,
+            face_materials: vec![],
+        });
+        let n = s.add_node(Node { name: "plate".into(), geometry: Some(g), ..Default::default() });
+        s.roots.push(n);
+
+        let small = write_bytes(&s, &Options::default()).unwrap();
+        let large = write_bytes(&s, &text()).unwrap();
+        // How much smaller depends on the numbers: a coordinate like 0.37
+        // costs four characters and one like -157.03421 costs ten, so a
+        // synthetic mesh flatters the text form. This one gives 148 KB
+        // against 206 KB; the pilot, whose coordinates are real, gives 50 MB
+        // against 172.
+        assert!(
+            small.len() < large.len(),
+            "binary {} is not under text {}",
+            small.len(),
+            large.len()
+        );
+        assert!(entries(&small)[0].0.ends_with(".usdc"));
     }
 
     #[test]

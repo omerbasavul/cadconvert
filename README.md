@@ -101,11 +101,28 @@ metal, the roughness, the index of refraction, the grain and the normal map all
 survive the crossing. Every package is checked against Apple's own
 `usdchecker`, including `--arkit`.
 
-It costs size. USD's text form spells every coordinate out, and the pilot comes
-to 172 MB against the glTF's 40. USD's binary form would be 43 MB — measured,
-by handing our own output to `usdcat` — but writing one is a container of its
-own, with a token table, a path table and a bespoke integer encoding, and it is
-not written here yet.
+The package carries USD's **binary** encoding. That is most of what a USDZ
+weighs, because a USDZ may not compress anything and USD's text form spells
+every coordinate out:
+
+| the pilot assembly, 1 970 388 triangles | |
+|---|---:|
+| glTF binary | 40 MB |
+| USD, text | 172 MB |
+| USD, binary — what this writes | 50 MB |
+| USD, binary — what `usdcat` makes of our text | 43 MB |
+
+The crate format was learned by taking apart files USD wrote rather than from a
+specification; `tools/usdc_decode.py` is what did the taking apart and is kept
+because it is also how a file written here is checked against one that was not.
+The remaining 15% against `usdcat` is two things given up on purpose: matches
+in the LZ4, which would buy back a fraction of a per cent of a file that is
+mostly incompressible coordinates, and instancing, which needs a composition
+arc whose encoding has not been read off a file yet — it costs under eight per
+cent, since the parts the pilot repeats are the small ones.
+
+`--usd-text` writes the text form instead, which is worth having when a reader
+and a writer disagree about what is in a file and you want to open it and look.
 
 ## Robustness and cost
 

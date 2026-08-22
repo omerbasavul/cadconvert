@@ -24,6 +24,7 @@ pub mod error;
 pub mod glb;
 pub mod prepare;
 pub mod usd;
+pub mod usdc;
 
 pub use error::{ExportError, Result};
 
@@ -83,6 +84,13 @@ pub struct Options {
     pub flatten: bool,
     /// Name written into the output's asset metadata.
     pub generator: String,
+    /// Write USD in its text form rather than its binary one.
+    ///
+    /// Off. The two carry the same scene and the text one costs about four
+    /// times the size — a USDZ may not compress, so that is the file. Kept
+    /// because a text layer is the one you can open in an editor when a
+    /// reader disagrees with the writer about what is in it.
+    pub usd_text: bool,
 }
 
 impl Default for Options {
@@ -93,6 +101,7 @@ impl Default for Options {
             normals: true,
             compression: Compression::None,
             flatten: false,
+            usd_text: false,
             generator: format!("cadmesh {}", env!("CARGO_PKG_VERSION")),
         }
     }
