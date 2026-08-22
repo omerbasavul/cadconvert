@@ -19,6 +19,7 @@
 
 pub mod brep;
 pub mod eval;
+pub mod image;
 pub mod material;
 pub mod material_resolve;
 pub mod math;
