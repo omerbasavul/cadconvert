@@ -59,6 +59,19 @@ pub fn bundled_texture(path: &str) -> Option<&'static [u8]> {
         .map(|(_, bytes, _)| *bytes)
 }
 
+/// What the shipped image is called, which is not always what the appearance
+/// calls it: a `.dds` ships as a `.png` because that is what it was decoded
+/// into, and a colour image ships as the grain that replaced it. Naming the
+/// original in the output would put a `.dds` extension on PNG bytes.
+pub fn bundled_texture_name(path: &str) -> &str {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    BUNDLED_SHIPPED
+        .iter()
+        .find(|(key, _)| *key == file)
+        .map(|(_, name)| *name)
+        .unwrap_or(file)
+}
+
 /// What a bundled colour image averages, so a caller can put the level back.
 ///
 /// One for an image carried as it was. Less for a grain whose level was

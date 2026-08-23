@@ -675,7 +675,7 @@ pub fn attach_appearance_textures(scene: &mut Scene) -> Vec<String> {
                 // finishes the resolver can reach carry their images.
                 continue;
             };
-            match crate::image::load(&path, bytes) {
+            match crate::image::load(crate::p2m::bundled_texture_name(&path), bytes) {
                 Ok(image) => {
                     let id = scene.add_image(image);
                     if slot {
