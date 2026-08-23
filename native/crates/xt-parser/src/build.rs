@@ -73,10 +73,15 @@ fn build_one_body(
     let res_size = f.get(res_size_fi).map(|v| v.as_f64()).unwrap_or(1e3);
     let res_linear = f.get(res_linear_fi).map(|v| v.as_f64()).unwrap_or(1e-6);
     let body_type_raw = f.get(body_type_fi).map(|v| v.as_byte()).unwrap_or(0);
+    // The four the format defines. 7 and 12 stood here for sheet and wire and
+    // are not body types at all, so every sheet body in the corpus read as
+    // Unknown(3) — including the one in 500.081UB.x_t, whose second body is a
+    // half-micron planar sheet that the file really does contain.
     let body_type = match body_type_raw {
         1 => XtBodyType::Solid,
-        7 => XtBodyType::Sheet,
-        12 => XtBodyType::Wire,
+        2 => XtBodyType::Wire,
+        3 => XtBodyType::Sheet,
+        6 => XtBodyType::General,
         _ => XtBodyType::Unknown(body_type_raw),
     };
 

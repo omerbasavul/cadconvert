@@ -134,14 +134,17 @@ fn lower_body(body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody 
     shells.sort_unstable();
     shells.dedup();
 
-    // Body type: the byte field holding a known code. 1=solid, 3 behaves as a
-    // sheet in the corpus, 7=sheet, 12=wire.
+    // Body type: the byte field holding a known code — 1 solid, 2 wire,
+    // 3 sheet, 6 general. This one was right about 3 by observation before the
+    // numbers were read off the format, which is why a sheet body's boundary
+    // has never been mistaken for a hole here even while the parser beside it
+    // called the same body Unknown(3).
     b.solid.body_type = body_type_candidates
         .iter()
         .find_map(|&v| match v {
             1 => Some(BodyType::Solid),
-            3 | 7 => Some(BodyType::Sheet),
-            12 => Some(BodyType::Wire),
+            2 => Some(BodyType::Wire),
+            3 => Some(BodyType::Sheet),
             _ => None,
         })
         .unwrap_or(BodyType::Solid);
