@@ -1040,12 +1040,19 @@ mod texture_tests {
         attach_appearance_textures(&mut scene);
 
         let m = &scene.materials[0];
-        let Some(id) = m.textures.base_colour else {
+        if m.textures.base_colour.is_none() {
             return; // no image tree on this machine; build.rs said so
-        };
-        let path = &scene.images[id.index()].name;
-        let level = crate::p2m::bundled_texture_level(path);
-        assert!(level > 0.8, "the grain kept most of itself: {level}");
+        }
+        // By the path the appearance names, not by what the image ended up
+        // called: the shipped file is the grain that replaced it.
+        let path = crate::p2m::AppearanceLibrary::bundled()
+            .get("painted/powder coat/dark powdercoat")
+            .unwrap()
+            .colour_texture
+            .clone()
+            .unwrap();
+        let level = crate::p2m::bundled_texture_level(&path);
+        assert!(level > 0.8 && level < 1.0, "the grain kept most of itself: {level}");
 
         for k in 0..3 {
             let expected = colour[k] / level;
