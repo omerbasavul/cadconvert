@@ -95,7 +95,7 @@ fn write_textures(materials: &Path, out_dir: &Path) {
     }
     wanted.sort();
 
-    // Colour images whose level has been divided out, by tools/make_grain.py.
+    // Appearance images prepared by tools/prepare_texture.py.
     //
     // A SolidWorks colour image is the appearance's own colour times a grain
     // whose mean is one, and multiplying a part's colour by it applies that
@@ -104,6 +104,12 @@ fn write_textures(materials: &Path, out_dir: &Path) {
     // dominant paint needs 1.12 and its blue needs 2.44, and both came out
     // clamped to white. So the grain is prepared separately and shipped
     // instead of the image, and the number to multiply back by comes with it.
+    //
+    // Normal maps are prepared too, for a duller reason: they are .dds, which
+    // neither glTF nor USD takes, and decoding them here would mean this
+    // build script owning a DDS reader the crate beside it already has. Those
+    // ship at a level of one — a normal map's values are vectors and scaling
+    // any of them bends every normal in it.
     let grains = read_grains(&assets.join("generated/grains.txt"));
 
     let mut out = String::from(

@@ -1,3 +1,4 @@
-# Colour images with their level divided out, by tools/make_grain.py.
-# <original file>	<grain>	<mean after clipping>
+# Appearance images prepared by tools/prepare_texture.py.
+# <original file>	<what ships>	<mean after clipping>
 powdercoat_dark.jpg	powdercoat_dark_grain.png	0.905391
+powdercoat_n.dds	powdercoat_n.png	1.000000

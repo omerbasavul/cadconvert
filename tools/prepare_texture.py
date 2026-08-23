@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Separate an appearance's grain from its colour, once, offline.
+"""Prepare an appearance's images for shipping, once, offline.
 
 A SolidWorks colour image is the appearance's own colour times a grain whose
 mean is one: `powdercoat_dark.jpg` has a linear mean of 0.1830 and the
@@ -14,7 +14,11 @@ multiplies by the colour the CAD file states. The result is our own derived
 data rather than SolidWorks' image, which is the better thing to be shipping
 in any case.
 
-    python3 tools/make_grain.py <in.jpg> <out.png>
+    python3 tools/prepare_texture.py <in.jpg|in.dds> <out.png>
+
+A `.dds` is only decoded: neither glTF nor USD takes one, and the crate's own
+reader and PNG writer do the conversion, so what ships is what the converter
+would have produced at run time. A `.jpg` has its level divided out as well.
 
 Needs `sips` (macOS) to decode the JPEG, and the crate's own PNG writer to
 emit the result — the converter has neither a JPEG decoder nor a reason for
@@ -69,11 +73,45 @@ def to_srgb(c):
     return round((12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055) * 255)
 
 
+def crate_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parent.parent / "native"
+
+
+def record(dst: str, src: str, level: float) -> None:
+    """The level the converter has to divide by, beside the file it belongs
+    to. One for an image carried as it was; less for a grain that lost some of
+    itself to clipping."""
+    out = pathlib.Path(dst)
+    manifest = out.parent / "grains.txt"
+    key = pathlib.Path(src).name.lower()
+    lines = [l for l in manifest.read_text().splitlines() if not l.startswith(key + "\t")] \
+        if manifest.exists() else [
+            "# Appearance images prepared by tools/prepare_texture.py.",
+            "# <original file>\t<what ships>\t<mean after clipping>",
+        ]
+    lines.append(f"{key}\t{out.name}\t{level:.6f}")
+    manifest.write_text("\n".join(lines) + "\n")
+    print(f"  recorded in {manifest}")
+
+
+def decode_only(src: str, dst: str) -> int:
+    """A normal map: decoded and re-encoded, nothing else touched. Its values
+    are vectors and rescaling any of them would bend every normal in it."""
+    subprocess.run(
+        ["cargo", "run", "--release", "-q", "-p", "cad-ir", "--example", "texture_probe",
+         "--", str(pathlib.Path(src).resolve()), dst],
+        cwd=crate_root(), check=True)
+    record(dst, src, 1.0)
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
     src, dst = sys.argv[1], str(pathlib.Path(sys.argv[2]).resolve())
+    if src.lower().endswith(".dds"):
+        return decode_only(src, dst)
 
     with tempfile.TemporaryDirectory() as tmp:
         png = f"{tmp}/decoded.png"
@@ -109,23 +147,9 @@ def main() -> int:
         subprocess.run(
             ["cargo", "run", "--release", "-q", "-p", "cad-ir", "--example", "encode_png",
              "--", raw, str(w), str(h), dst],
-            cwd="native", check=True)
+            cwd=crate_root(), check=True)
     print(f"  wrote {dst}, {pathlib.Path(dst).stat().st_size} bytes")
-
-    # The level the converter has to divide by. Clipping means the grain's own
-    # mean is under one, and a part multiplied by it would come out that much
-    # darker; recording the number here is what lets the converter put it back.
-    out = pathlib.Path(dst)
-    manifest = out.parent / "grains.txt"
-    key = pathlib.Path(src).name.lower()
-    lines = [l for l in manifest.read_text().splitlines() if not l.startswith(key + "\t")] \
-        if manifest.exists() else [
-            "# Colour images with their level divided out, by tools/make_grain.py.",
-            "# <original file>\t<grain>\t<mean after clipping>",
-        ]
-    lines.append(f"{key}\t{out.name}\t{clipped_mean[0]:.6f}")
-    manifest.write_text("\n".join(lines) + "\n")
-    print(f"  recorded in {manifest}")
+    record(dst, src, clipped_mean[0])
     return 0
 
 
