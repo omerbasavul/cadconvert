@@ -17,7 +17,6 @@
 #[path = "common/glb_read.rs"]
 mod glb_read;
 
-use std::io::Write;
 
 type V3 = [f64; 3];
 
@@ -671,58 +670,23 @@ fn load_obj(path: &str, part: Option<&str>) -> Result<Vec<Tri>, Box<dyn std::err
 ///
 /// Writing the format by hand keeps this example free of an image dependency,
 /// and the files are only looked at once.
+/// Write the frame, using the crate's own PNG writer.
+///
+/// This had one of its own that emitted stored deflate blocks — a valid PNG
+/// and no smaller than the pixels it was given, so a 900x760 render came to
+/// 2.05 MB, more than raw RGB. `cad_ir::image` has a real one now: per-row
+/// filtering and a Huffman coder. Same file, a fraction of the size, and one
+/// encoder in the project rather than two.
 fn write_png(
     path: &str,
     width: usize,
     height: usize,
     pixels: &[[u8; 3]],
 ) -> std::io::Result<()> {
-    let mut raw: Vec<u8> = Vec::with_capacity(height * (1 + width * 3));
-    for y in 0..height {
-        raw.push(0); // filter: none
-        for x in 0..width {
-            raw.extend_from_slice(&pixels[y * width + x]);
-        }
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for p in pixels {
+        rgba.extend_from_slice(p);
+        rgba.push(255);
     }
-
-    let mut z: Vec<u8> = vec![0x78, 0x01];
-    for (i, chunk) in raw.chunks(65_535).enumerate() {
-        let last = (i + 1) * 65_535 >= raw.len();
-        z.push(if last { 1 } else { 0 });
-        z.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
-        z.extend_from_slice(&(!(chunk.len() as u16)).to_le_bytes());
-        z.extend_from_slice(chunk);
-    }
-    let (mut a, mut b) = (1u32, 0u32);
-    for byte in &raw {
-        a = (a + *byte as u32) % 65_521;
-        b = (b + a) % 65_521;
-    }
-    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
-
-    let chunk = |kind: &[u8; 4], data: &[u8]| -> Vec<u8> {
-        let mut out = (data.len() as u32).to_be_bytes().to_vec();
-        out.extend_from_slice(kind);
-        out.extend_from_slice(data);
-        let mut crc = 0xffff_ffffu32;
-        for byte in kind.iter().chain(data) {
-            crc ^= *byte as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
-            }
-        }
-        out.extend_from_slice(&(!crc).to_be_bytes());
-        out
-    };
-
-    let mut ihdr = (width as u32).to_be_bytes().to_vec();
-    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
-    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit, truecolour
-
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])?;
-    file.write_all(&chunk(b"IHDR", &ihdr))?;
-    file.write_all(&chunk(b"IDAT", &z))?;
-    file.write_all(&chunk(b"IEND", &[]))?;
-    Ok(())
+    std::fs::write(path, cad_ir::image::encode_png(width as u32, height as u32, &rgba))
 }
