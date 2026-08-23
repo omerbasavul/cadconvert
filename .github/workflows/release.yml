@@ -1,20 +1,16 @@
-# On a tag, build every runtime, pack the NuGet, and attach the command line
-# for each platform to the release.
+# On a tag, build every runtime, pack the NuGet, publish it, and attach the
+# command line for each platform to the release.
 #
-# The package is not pushed automatically. Publishing is irreversible — a
-# version on nuget.org cannot be replaced, only delisted — so the artefact is
-# built and attached here and the push is a deliberate act with a key.
+# There is no API key anywhere. nuget.org mints a short-lived one against the
+# identity token GitHub gives this workflow — trusted publishing — and will
+# only do so for a job that runs in the environment its policy names. That is
+# also the boundary worth having: publishing is the one step here that cannot
+# be undone, and an environment is where approval rules can be attached.
 name: release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Push the package to nuget.org. Irreversible: a version cannot be replaced, only delisted.'
-        type: boolean
-        default: false
+    tags: ['v*.*.*']
 
 env:
   CARGO_TERM_COLOR: always
@@ -90,8 +86,13 @@ jobs:
   release:
     needs: native
     runs-on: ubuntu-latest
+    # Named by the trusted-publishing policy on nuget.org; it will not mint a
+    # token for a job that runs anywhere else.
+    environment: production
     permissions:
       contents: write
+      # What nuget.org exchanges for a key.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -159,8 +160,31 @@ jobs:
           Console.Error.WriteLine("a missing file was not refused");
           return 1;
           CS
-          cd app && dotnet add package CadConvert --prerelease >/dev/null
+          # By version, and the version of the file that was just packed.
+          # Without it NuGet takes the highest it can see across every source,
+          # so once anything is on nuget.org this check quietly starts
+          # verifying a package that was published rather than the one that is
+          # about to be.
+          version=$(basename "$GITHUB_WORKSPACE"/dist/CadConvert.*.nupkg \
+            | sed -E 's/^CadConvert\.(.*)\.nupkg$/\1/' | head -1)
+          echo "checking CadConvert $version"
+          # No --prerelease beside --version: the two are refused together, and
+          # an explicit version takes a pre-release without being asked.
+          cd app && dotnet add package CadConvert --version "$version" >/dev/null
           dotnet run
+
+      - name: authenticate to nuget.org
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: push to nuget.org
+        run: >
+          dotnet nuget push "dist/*.nupkg"
+          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
 
       - name: attach everything to the release
         uses: softprops/action-gh-release@v2
@@ -170,22 +194,8 @@ jobs:
             dist/*.snupkg
             binaries/*/*
           generate_release_notes: true
-
-      # Only when a person asked for it, in the run they started. A tag does
-      # not publish: pushing to nuget.org cannot be undone, and a release that
-      # publishes itself the moment a tag lands is a release nobody had the
-      # chance to look at.
-      - name: push to nuget.org
-        if: inputs.publish
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NUGET_API_KEY:-}" ]; then
-            echo "::error::publish was asked for but the NUGET_API_KEY secret is not set"
-            exit 1
-          fi
-          dotnet nuget push dist/*.nupkg \
-            --source https://api.nuget.org/v3/index.json \
-            --api-key "$NUGET_API_KEY" \
-            --skip-duplicate
+          # SemVer opens the pre-release field at a hyphen, so v0.2.0-rc.1 is a
+          # pre-release and v0.2.0 is not. The action does not read that off the
+          # tag, and an unmarked pre-release shows as "Latest" on the front page
+          # — which is then the version people install.
+          prerelease: ${{ contains(github.ref_name, '-') }}

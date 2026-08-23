@@ -64,6 +64,20 @@ dotnet build CadConvert.slnx -c Release    # builds the Rust side too
 dotnet test  CadConvert.slnx -c Release
 ```
 
+Testing the **package** by hand needs one more step, and skipping it is
+misleading rather than merely useless:
+
+```sh
+rm -rf ~/.nuget/packages/cadconvert          # or the cached one is what loads
+dotnet pack src/CadConvert -c Release -o dist
+```
+
+NuGet caches by identifier and version. Repacking 0.1.0 twenty times and
+restoring it into an application gives whichever copy landed in the cache
+first, however long ago — which is how a converter that had gained USDZ came
+out writing glTF into a file called `.usdz` on this machine while CI, whose
+runners have no cache, was right about it all along.
+
 The Rust side on its own, from `native/`:
 
 ```sh

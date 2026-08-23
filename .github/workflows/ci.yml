@@ -282,7 +282,17 @@ jobs:
           Console.Error.WriteLine("a missing file was not refused");
           return 1;
           CS
-          cd app && dotnet add package CadConvert --prerelease >/dev/null
+          # By version, and the version of the file that was just packed.
+          # Without it NuGet takes the highest it can see across every source,
+          # so once anything is on nuget.org this check quietly starts
+          # verifying a package that was published rather than the one that is
+          # about to be.
+          version=$(basename "$GITHUB_WORKSPACE"/dist/CadConvert.*.nupkg \
+            | sed -E 's/^CadConvert\.(.*)\.nupkg$/\1/' | head -1)
+          echo "checking CadConvert $version"
+          # No --prerelease beside --version: the two are refused together, and
+          # an explicit version takes a pre-release without being asked.
+          cd app && dotnet add package CadConvert --version "$version" >/dev/null
           dotnet run
 
       - uses: actions/upload-artifact@v4
