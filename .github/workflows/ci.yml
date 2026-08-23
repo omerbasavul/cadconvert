@@ -230,19 +230,16 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          found=0
-          for dir in staged/runtime-*; do
-            rid="${dir#staged/runtime-}"
+          for rid in linux-x64 linux-arm64 osx-arm64 osx-x64 win-x64; do
+            if [ ! -d "staged/runtime-$rid" ]; then
+              echo "::error::no native library for $rid; the package would fail there at the first call"
+              exit 1
+            fi
             mkdir -p "runtimes/$rid/native"
-            cp "$dir"/* "runtimes/$rid/native/"
+            cp "staged/runtime-$rid"/* "runtimes/$rid/native/"
             echo "  $rid: $(ls "runtimes/$rid/native")"
-            found=$((found + 1))
           done
-          if [ "$found" -eq 0 ]; then
-            echo "no runtimes arrived; the package would fail at the first P/Invoke" >&2
-            exit 1
-          fi
-          echo "$found runtimes staged"
+          echo "all five runtimes staged"
 
       # Every runtime is already built and staged, so the native build is off:
       # this machine could only rebuild its own, and would overwrite nothing
@@ -269,10 +266,18 @@ jobs:
           </configuration>
           XML
           sed -i "s|DIST|$GITHUB_WORKSPACE/dist|" app/nuget.config
+          cp "$GITHUB_WORKSPACE/native/crates/cad-convert/tests/samples/small.x_t" app/part.x_t
           cat > app/Program.cs <<'CS'
           using CadConvert;
           Console.WriteLine($"native cadconvert {CadConverter.NativeVersion}");
-          try { CadConverter.Convert("no-such-file.x_t", "/tmp/out.glb"); }
+          // Both containers, from the package rather than from the build tree.
+          foreach (var target in new[] { "out.glb", "out.usdz" })
+          {
+              var r = CadConverter.Convert("part.x_t", target);
+              if (r.Triangles == 0) { Console.Error.WriteLine($"{target} came out empty"); return 1; }
+              Console.WriteLine($"{target}: {r.Triangles} triangles, {r.Bytes} bytes");
+          }
+          try { CadConverter.Convert("no-such-file.x_t", "out.glb"); }
           catch (CadConvertException e) { Console.WriteLine($"refused as it should: {e.Message}"); return 0; }
           Console.Error.WriteLine("a missing file was not refused");
           return 1;

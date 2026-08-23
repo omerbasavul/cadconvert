@@ -10,6 +10,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Push the package to nuget.org. Irreversible: a version cannot be replaced, only delisted.'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -118,10 +123,69 @@ jobs:
           dotnet pack src/CadConvert -c Release -o dist \
             -p:Version="$version" -p:BuildNative=false
 
+      # The last gate before a person decides to publish: restore the package
+      # that was just built into an application that has never seen it, and
+      # convert something with it. Getting the runtimes/ layout wrong produces
+      # no error until the first P/Invoke, and a version on nuget.org cannot be
+      # taken back.
+      - name: restore the package into a fresh app and convert with it
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          dotnet new console -o app --force >/dev/null
+          cat > app/nuget.config <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="local" value="DIST" />
+              <add key="nuget" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          XML
+          sed -i "s|DIST|$GITHUB_WORKSPACE/dist|" app/nuget.config
+          cp "$GITHUB_WORKSPACE/native/crates/cad-convert/tests/samples/small.x_t" app/part.x_t
+          cat > app/Program.cs <<'CS'
+          using CadConvert;
+          Console.WriteLine($"native cadconvert {CadConverter.NativeVersion}");
+          foreach (var target in new[] { "out.glb", "out.usdz" })
+          {
+              var r = CadConverter.Convert("part.x_t", target);
+              if (r.Triangles == 0) { Console.Error.WriteLine($"{target} came out empty"); return 1; }
+              Console.WriteLine($"{target}: {r.Triangles} triangles, {r.Bytes} bytes");
+          }
+          try { CadConverter.Convert("no-such-file.x_t", "x.glb"); }
+          catch (CadConvertException) { return 0; }
+          Console.Error.WriteLine("a missing file was not refused");
+          return 1;
+          CS
+          cd app && dotnet add package CadConvert --prerelease >/dev/null
+          dotnet run
+
       - name: attach everything to the release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.nupkg
+            dist/*.snupkg
             binaries/*/*
           generate_release_notes: true
+
+      # Only when a person asked for it, in the run they started. A tag does
+      # not publish: pushing to nuget.org cannot be undone, and a release that
+      # publishes itself the moment a tag lands is a release nobody had the
+      # chance to look at.
+      - name: push to nuget.org
+        if: inputs.publish
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NUGET_API_KEY:-}" ]; then
+            echo "::error::publish was asked for but the NUGET_API_KEY secret is not set"
+            exit 1
+          fi
+          dotnet nuget push dist/*.nupkg \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate

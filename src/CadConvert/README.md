@@ -1,12 +1,14 @@
 # CadConvert
 
-Parasolid (`.x_t`) and STEP (`.stp`) to glTF 2.0. Reads the B-Rep, tessellates
-it watertight, and writes a `.glb` with materials — no CAD kernel to install.
+Parasolid (`.x_t`) and STEP (`.stp`) to **glTF 2.0** or **USDZ**. Reads the
+B-Rep, tessellates it watertight, and writes a mesh with materials — no CAD
+kernel to install.
 
 ```csharp
 using CadConvert;
 
 var result = CadConverter.Convert("housing.x_t", "housing.glb");
+// The output's extension chooses the container: .glb or .usdz.
 
 Console.WriteLine($"{result.Bodies} bodies, {result.Triangles:N0} triangles");
 foreach (var warning in result.Warnings)
@@ -47,5 +49,14 @@ The package carries the native library for every runtime it was built for,
 under `runtimes/{rid}/native`: `linux-x64`, `linux-arm64`, `osx-arm64`,
 `osx-x64`, `win-x64`. If a P/Invoke fails at load time, the runtime you are on
 was not among them.
+
+A .NET Core host finds those on its own. .NET Framework does not — it copies a
+runtime-specific file only when the project names a runtime identifier, and
+most do not — so the package brings a `build/CadConvert.targets` that puts the
+right one beside your executable, and warns at build time if it has none for
+the platform you are building for.
+
+`build/native/include/cadconvert.h` is there for a caller that is not .NET at
+all; it describes the same library.
 
 Source, benchmarks and the engineering record: <https://github.com/omerbasavul/cadconvert>

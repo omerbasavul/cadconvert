@@ -12,11 +12,24 @@
     <PackageId>CadConvert</PackageId>
     <Version>0.1.0</Version>
     <Authors>omerbasavul</Authors>
-    <Description>Parasolid (.x_t) and STEP (.stp) to glTF binary. Reads the B-Rep, tessellates it, and writes a glTF 2.0 file with materials.</Description>
-    <PackageTags>cad;parasolid;step;gltf;glb;mesh;tessellation</PackageTags>
+    <Description>Parasolid (.x_t) and STEP (.stp) to glTF 2.0 or USDZ. Reads the B-Rep, tessellates it watertight, and writes a mesh with the materials the designer chose. No CAD kernel to install.</Description>
+    <PackageTags>cad;parasolid;step;gltf;glb;usd;usdz;mesh;tessellation;brep</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeBuildOutput>true</IncludeBuildOutput>
+    <Copyright>Copyright (c) omerbasavul</Copyright>
+    <PackageProjectUrl>https://github.com/omerbasavul/cadconvert</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/omerbasavul/cadconvert</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- A stack trace that names a line is worth having, and a build that
+         gives the same bytes twice is worth more. Both are free here. -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
   <!-- The native library, one per runtime identifier.
@@ -33,7 +46,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
+    <!-- NuGet runs a package's build/<id>.targets in the consumer's project.
+         Ours is for the consumers whose host does not resolve runtimes/ on
+         its own — see the file for which and why. -->
+    <None Include="build/CadConvert.targets" Pack="true" PackagePath="build/" />
+    <None Include="build/CadConvert.targets" Pack="true" PackagePath="buildTransitive/" />
+    <!-- The C header, for a caller that is not .NET at all. The library it
+         describes is the same one under runtimes/. -->
+    <None Include="../../native/crates/cad-ffi/include/cadconvert.h"
+          Pack="true" PackagePath="build/native/include/" />
     <None Include="$(NativeRuntimesDir)**/native/*"
           Pack="true"
           PackagePath="runtimes"

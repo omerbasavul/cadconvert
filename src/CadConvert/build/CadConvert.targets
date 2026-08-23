@@ -1,0 +1,60 @@
+<!-- Getting the native library next to a consumer's executable.
+     ================================================================
+     A .NET Core host resolves `runtimes/{rid}/native` out of the package by
+     itself, and for those consumers this file does nothing.
+
+     .NET Framework does not. NuGet only copies a RID-specific asset when the
+     project states a RuntimeIdentifier, and a .NET Framework application
+     normally states none — so it gets CadConvert.dll, no native library, and
+     a DllNotFoundException at the first call. The package targets
+     netstandard2.0 precisely so that it reaches .NET Framework 4.6.1 and
+     later, which makes that a promise the package has to keep.
+
+     So: pick the runtime this build is for and copy it to the output. The
+     architecture comes from the platform the project is building for, and
+     where that says nothing — AnyCPU, which is the default — from the machine
+     doing the building, since an AnyCPU process on a 64-bit Windows is
+     64-bit. -->
+<Project>
+
+  <PropertyGroup>
+    <_CadConvertPackageRoot>$(MSBuildThisFileDirectory)../</_CadConvertPackageRoot>
+
+    <_CadConvertOs Condition="'$(OS)' == 'Windows_NT'">win</_CadConvertOs>
+    <_CadConvertOs Condition="'$(_CadConvertOs)' == '' AND $([MSBuild]::IsOSPlatform('OSX'))">osx</_CadConvertOs>
+    <_CadConvertOs Condition="'$(_CadConvertOs)' == ''">linux</_CadConvertOs>
+
+    <_CadConvertArch Condition="'$(PlatformTarget)' == 'x64'">x64</_CadConvertArch>
+    <_CadConvertArch Condition="'$(PlatformTarget)' == 'ARM64'">arm64</_CadConvertArch>
+    <_CadConvertArch Condition="'$(_CadConvertArch)' == '' AND '$(PROCESSOR_ARCHITECTURE)' == 'ARM64'">arm64</_CadConvertArch>
+    <_CadConvertArch Condition="'$(_CadConvertArch)' == '' AND '$(PROCESSOR_ARCHITEW6432)' == 'ARM64'">arm64</_CadConvertArch>
+    <_CadConvertArch Condition="'$(_CadConvertArch)' == ''">x64</_CadConvertArch>
+
+    <_CadConvertRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_CadConvertRid>
+    <_CadConvertRid Condition="'$(_CadConvertRid)' == ''">$(_CadConvertOs)-$(_CadConvertArch)</_CadConvertRid>
+  </PropertyGroup>
+
+  <!-- Only where the host will not find it on its own. A .NET Core project
+       already has the file through the package's own RID resolution, and
+       copying a second one beside the executable would be two copies of three
+       megabytes and a question about which one loaded. -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">
+    <None Include="$(_CadConvertPackageRoot)runtimes/$(_CadConvertRid)/native/*"
+          Condition="Exists('$(_CadConvertPackageRoot)runtimes/$(_CadConvertRid)/native')">
+      <Link>%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </None>
+  </ItemGroup>
+
+  <!-- A package that carries no runtime for the machine it lands on fails at
+       the first call and nowhere earlier. Say so at build time instead. -->
+  <Target Name="CadConvertCheckRuntime"
+          BeforeTargets="Build"
+          Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">
+    <Warning Condition="!Exists('$(_CadConvertPackageRoot)runtimes/$(_CadConvertRid)/native')"
+             Code="CADCONVERT001"
+             Text="CadConvert carries no native library for $(_CadConvertRid); every conversion will fail at the first call. The package ships linux-x64, linux-arm64, osx-arm64, osx-x64 and win-x64." />
+  </Target>
+
+</Project>
