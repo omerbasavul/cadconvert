@@ -5,6 +5,13 @@
 #   color RRGGBB   = <material>     exact face colour
 #   default        = <material>     surfaces with no other evidence
 #
+# Any rule may end in a colour: `= <material> #RRGGBB`. That is the only thing
+# here that replaces the colour the CAD file states — everything else changes
+# how a surface is finished and leaves its colour alone. Use it for a product
+# that is not delivered in the colour it was modelled in, a casting drawn grey
+# and shipped black, which no amount of reading the file will reveal. A
+# material named `AISI 304` or `1.4301` keeps its name: only a `#` counts.
+#
 # Material names are classified by keyword — English and Turkish trade names
 # and common designations all work: "AISI 304", "Paslanmaz Çelik", "6061-T6",
 # "EPDM", "POM", "Pirinç MS58", "Dökme Demir GG25", "Toz Boya RAL 5010", ...
@@ -17,4 +24,5 @@
 # part 219 203 *  = AISI 304
 # part 1102.*     = EPDM
 # color 0033BB    = Toz Boya RAL 5010
+# part 200 201 *  = Toz Boya #1A1A1A      # drawn grey, delivered black
 # default         = Çelik

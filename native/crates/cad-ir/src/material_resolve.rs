@@ -168,15 +168,50 @@ pub struct ColourEvidence {
     pub alpha: f32,
 }
 
+/// What a rule says a surface is: a material, and optionally the colour to
+/// paint it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Named {
+    pub material: String,
+    /// `#RRGGBB` written after the material name.
+    ///
+    /// The one thing in the chain that outranks the file. Everything else here
+    /// changes how a surface is *finished* and leaves its colour alone, because
+    /// the colour is the file's own and was checked body by body against
+    /// another kernel. This is for when the product is not delivered in the
+    /// colour the model was drawn in — a casting modelled grey and shipped
+    /// black — which no amount of reading the file will reveal.
+    pub colour: Option<[u8; 3]>,
+}
+
 /// One rule from a user-supplied material table.
 #[derive(Debug, Clone, PartialEq)]
 enum Rule {
     /// `part <pattern> = <material>` — glob over the part name.
-    Part { pattern: String, material: String },
+    Part { pattern: String, named: Named },
     /// `color RRGGBB = <material>` — exact colour match.
-    Colour { hex: String, material: String },
+    Colour { hex: String, named: Named },
     /// `default = <material>` — for surfaces with no other evidence.
-    Default { material: String },
+    Default { named: Named },
+}
+
+/// Split a trailing `#RRGGBB` off a material name.
+///
+/// Only with the hash, and only at the end: a material really can be called
+/// `AISI 304` or `1.4301`, and eating six characters off the end of one
+/// because they happen to be hexadecimal would be a fine way to lose a name.
+fn split_colour(rhs: &str) -> (String, Option<[u8; 3]>, Option<String>) {
+    let Some((name, hex)) = rhs.rsplit_once('#') else {
+        return (rhs.trim().to_string(), None, None);
+    };
+    let hex = hex.trim();
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (rhs.trim().to_string(), None, Some(format!("{hex:?} is not RRGGBB")));
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
+    let name = name.trim();
+    let name = if name.is_empty() { hex.to_uppercase() } else { name.to_string() };
+    (name, Some([byte(0), byte(2), byte(4)]), None)
 }
 
 /// A user-supplied mapping from part numbers and colours to material names.
@@ -216,24 +251,30 @@ impl MaterialTable {
                 errors.push(format!("line {}: no `=` in {line:?}", i + 1));
                 continue;
             };
-            let (lhs, material) = (lhs.trim(), rhs.trim().to_string());
+            let lhs = lhs.trim();
+            let (material, colour, bad_colour) = split_colour(rhs);
+            if let Some(why) = bad_colour {
+                errors.push(format!("line {}: {why}", i + 1));
+                continue;
+            }
             if material.is_empty() {
                 errors.push(format!("line {}: empty material name", i + 1));
                 continue;
             }
+            let named = Named { material, colour };
             if lhs == "default" {
-                rules.push(Rule::Default { material });
+                rules.push(Rule::Default { named });
             } else if let Some(hex) = lhs.strip_prefix("color ").or(lhs.strip_prefix("colour ")) {
                 let hex = hex.trim().trim_start_matches('#').to_uppercase();
                 if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                    rules.push(Rule::Colour { hex, material });
+                    rules.push(Rule::Colour { hex, named });
                 } else {
                     errors.push(format!("line {}: {hex:?} is not RRGGBB", i + 1));
                 }
             } else if let Some(pattern) = lhs.strip_prefix("part ") {
                 rules.push(Rule::Part {
                     pattern: pattern.trim().to_string(),
-                    material,
+                    named,
                 });
             } else {
                 errors.push(format!(
@@ -249,25 +290,23 @@ impl MaterialTable {
         self.rules.is_empty()
     }
 
-    fn part_match(&self, part: &str) -> Option<&str> {
+    fn part_match(&self, part: &str) -> Option<&Named> {
         self.rules.iter().find_map(|r| match r {
-            Rule::Part { pattern, material } if glob_match(pattern, part) => {
-                Some(material.as_str())
-            }
+            Rule::Part { pattern, named } if glob_match(pattern, part) => Some(named),
             _ => None,
         })
     }
 
-    fn colour_match(&self, hex: &str) -> Option<&str> {
+    fn colour_match(&self, hex: &str) -> Option<&Named> {
         self.rules.iter().find_map(|r| match r {
-            Rule::Colour { hex: h, material } if h == hex => Some(material.as_str()),
+            Rule::Colour { hex: h, named } if h == hex => Some(named),
             _ => None,
         })
     }
 
-    fn default(&self) -> Option<&str> {
+    fn default(&self) -> Option<&Named> {
         self.rules.iter().find_map(|r| match r {
-            Rule::Default { material } => Some(material.as_str()),
+            Rule::Default { named } => Some(named),
             _ => None,
         })
     }
@@ -385,8 +424,8 @@ impl MaterialResolver {
             .table
             .part_match(part)
             .or_else(|| hex.as_deref().and_then(|h| self.table.colour_match(h)));
-        if let Some(name) = named {
-            return self.build_named(name, colour, hex.as_deref());
+        if let Some(named) = named {
+            return self.build_named(named, colour, hex.as_deref());
         }
 
         // Rung 2½: designer-assigned reflectivity, when a Parasolid twin
@@ -424,11 +463,50 @@ impl MaterialResolver {
         }
     }
 
-    fn build_named(&self, name: &str, colour: Option<ColourEvidence>, hex: Option<&str>) -> Material {
+    fn build_named(&self, named: &Named, colour: Option<ColourEvidence>, _hex: Option<&str>) -> Material {
+        let name = named.material.as_str();
+        // A colour written in the table replaces the file's, and it replaces
+        // it everywhere below — including on a metal, where the file's own
+        // colour is normally set aside in favour of a measured reflectance.
+        // Someone who writes `#1A1A1A` has said what the surface is; there is
+        // nothing left to infer.
+        let colour = match named.colour {
+            Some(rgb) => {
+                let srgb = [
+                    rgb[0] as f32 / 255.0,
+                    rgb[1] as f32 / 255.0,
+                    rgb[2] as f32 / 255.0,
+                ];
+                Some(ColourEvidence {
+                    srgb,
+                    linear: crate::sldmat::srgb_to_linear_rgb(srgb),
+                    // Opacity stays whatever the file said: a table that names
+                    // a colour has said nothing about transparency.
+                    alpha: colour.map_or(1.0, |c| c.alpha),
+                })
+            }
+            None => colour,
+        };
         // The library states this material; nothing below can improve on it.
         // The part's own colour still applies to a dielectric, because a
         // painted casting is the library's plastic in the product's colour,
         // but a metal keeps the reflectance measured for it.
+        let mut built = self.build_named_inner(name, colour);
+        // Applied here rather than in each branch below, so that whatever the
+        // material turned out to be — a library entry, a classified name, or
+        // a name nothing recognises — a colour the table stated is the colour
+        // that ships.
+        if let Some(rgb) = named.colour {
+            built.base_color = crate::sldmat::srgb_to_linear_rgb([
+                rgb[0] as f32 / 255.0,
+                rgb[1] as f32 / 255.0,
+                rgb[2] as f32 / 255.0,
+            ]);
+        }
+        built
+    }
+
+    fn build_named_inner(&self, name: &str, colour: Option<ColourEvidence>) -> Material {
         if let Some(entry) = self.library.get(name) {
             let mut m = entry.to_material();
             if let Some(c) = colour
@@ -449,7 +527,6 @@ impl MaterialResolver {
                     .map(|c| MaterialClass::infer_from_srgb(c.srgb))
                     .unwrap_or(MaterialClass::Plastic);
                 let mut m = tinted(class, name.to_string(), colour, &self.library, Finish::from_name(name));
-                let _ = hex;
                 m.name = name.to_string();
                 m
             }
@@ -1004,6 +1081,139 @@ mod tests {
         let m = MaterialResolver::default().resolve("x", Some(c));
         assert!((m.alpha - 0.4).abs() < 1e-6);
         assert!(m.is_transparent());
+    }
+}
+
+#[cfg(test)]
+mod colour_override_tests {
+    use super::*;
+
+    fn table(text: &str) -> MaterialResolver {
+        let (table, errors) = MaterialTable::parse(text);
+        assert!(errors.is_empty(), "{errors:?}");
+        MaterialResolver { table, ..MaterialResolver::default() }
+    }
+
+    fn grey() -> ColourEvidence {
+        let srgb = [0.5, 0.5, 0.5];
+        ColourEvidence { srgb, linear: crate::sldmat::srgb_to_linear_rgb(srgb), alpha: 1.0 }
+    }
+
+    fn blue() -> ColourEvidence {
+        let srgb = [0.0, 0.2, 0.733]; // #0033BB, a painted casting
+        ColourEvidence { srgb, linear: crate::sldmat::srgb_to_linear_rgb(srgb), alpha: 1.0 }
+    }
+
+    #[test]
+    fn a_dielectrics_colour_is_the_files_and_stays_that_way() {
+        // Nothing in the chain may touch it. The colour of a painted surface
+        // is what the file says, and on this project's pilot every one of them
+        // was checked body by body against another kernel.
+        for resolver in [
+            MaterialResolver::default(),
+            table("part 200 201 003* = Toz Boya"),
+            table("color 0033BB = Toz Boya"),
+        ] {
+            let m = resolver.resolve("200 201 003-51", Some(blue()));
+            assert_eq!(m.metallic, 0.0);
+            assert_eq!(m.base_color, blue().linear, "a paint changed colour");
+        }
+    }
+
+    #[test]
+    fn a_metals_base_colour_is_a_reflectance_and_not_the_files_colour() {
+        // The one place a colour does change, and it is a translation rather
+        // than an invention: in glTF a metal's base colour is its Fresnel
+        // reflectance at normal incidence, not an albedo. Feeding it the
+        // file's swatch — a colour chosen to be recognisable in a list —
+        // gives a metal that reflects the wrong amount of light. Steel
+        // measures near 0.56 and the pilot's swatch for it is #555759.
+        //
+        // Which is why the pilot ships steel as #A6A3A0 and aluminium as
+        // #E4E4E5 rather than #555759 and #D1D1D1. Anyone auditing the output
+        // against the file will find those two and should find this comment.
+        let m = MaterialResolver::default().resolve("gear", Some(grey()));
+        assert_eq!(m.metallic, 1.0, "mid grey with no other evidence reads as metal");
+        assert_ne!(m.base_color, grey().linear);
+        assert!(
+            m.base_color.iter().all(|&c| c > 0.3),
+            "a metal reflects far more than a mid grey swatch suggests: {:?}",
+            m.base_color
+        );
+
+        // And a table that states a colour still wins.
+        let m = table("part gear* = Aluminium 6061 #B87333").resolve("gear", Some(grey()));
+        let expect = crate::sldmat::srgb_to_linear_rgb([0xB8 as f32 / 255.0, 0x73 as f32 / 255.0, 0x33 as f32 / 255.0]);
+        for k in 0..3 {
+            assert!((m.base_color[k] - expect[k]).abs() < 1e-6, "{:?}", m.base_color);
+        }
+    }
+
+    #[test]
+    fn a_colour_written_in_the_table_replaces_the_files() {
+        // For a casting modelled grey and delivered black — which no amount of
+        // reading the file will reveal, because the file says grey.
+        let m = table("part 200 201 003* = Toz Boya #1A1A1A")
+            .resolve("200 201 003-51", Some(grey()));
+        let expect = crate::sldmat::srgb_to_linear_rgb([26.0 / 255.0; 3]);
+        for k in 0..3 {
+            assert!((m.base_color[k] - expect[k]).abs() < 1e-6, "{:?}", m.base_color);
+        }
+    }
+
+    #[test]
+    fn it_replaces_a_metals_colour_too() {
+        // A dielectric normally takes the file's colour and a metal keeps the
+        // reflectance measured for it. Someone who writes a colour has said
+        // what the surface is, and there is nothing left to infer.
+        let m = table("part gear* = Aluminium 6061 #B87333").resolve("gear 1", Some(grey()));
+        assert_eq!(m.metallic, 1.0, "still a metal");
+        let expect = crate::sldmat::srgb_to_linear_rgb([0xB8 as f32 / 255.0, 0x73 as f32 / 255.0, 0x33 as f32 / 255.0]);
+        for k in 0..3 {
+            assert!((m.base_color[k] - expect[k]).abs() < 1e-6, "{:?}", m.base_color);
+        }
+    }
+
+    #[test]
+    fn a_colour_rule_can_carry_one_as_well_as_a_part_rule() {
+        let m = table("color 808080 = Toz Boya #000000").resolve("anything", Some(grey()));
+        assert_eq!(m.base_color, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_material_whose_name_ends_in_hex_keeps_its_name() {
+        // `AISI 304` and `1.4301` are real names and a rule that ate six
+        // characters off the end of one would be a fine way to lose it. Only a
+        // hash counts.
+        let (t, errors) = MaterialTable::parse("part a* = AISI 304\npart b* = 1.4301\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        let r = MaterialResolver { table: t, ..MaterialResolver::default() };
+        // Neither name lost its tail to a colour that was never written.
+        for part in ["a1", "b1"] {
+            let m = r.resolve(part, Some(blue()));
+            assert!(
+                m.name.contains("304") || m.name.contains("4301")
+                    || m.name.to_lowercase().contains("steel")
+                    || m.name.to_lowercase().contains("çelik"),
+                "{part} became {:?}",
+                m.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_colour_that_is_not_six_hex_digits_is_reported_rather_than_ignored() {
+        let (_, errors) = MaterialTable::parse("part a* = Toz Boya #12345\n");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("RRGGBB"), "{}", errors[0]);
+    }
+
+    #[test]
+    fn a_colour_on_its_own_is_a_material_named_by_it() {
+        // `default = #1A1A1A` — no material, just a colour. It keeps the
+        // shading the colour implies and takes the colour as written.
+        let m = table("default = #1A1A1A").resolve("unknown", None);
+        assert_eq!(m.base_color, crate::sldmat::srgb_to_linear_rgb([26.0 / 255.0; 3]));
     }
 }
 
