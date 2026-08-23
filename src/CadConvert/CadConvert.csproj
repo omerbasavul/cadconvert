@@ -50,6 +50,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Named so the message below can count runtimes and not the readme. -->
+    <CadConvertRuntime Include="$(NativeRuntimesDir)**/native/*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="/" />
     <!-- NuGet runs a package's build/<id>.targets in the consumer's project.
          Ours is for the consumers whose host does not resolve runtimes/ on
@@ -67,8 +72,9 @@
   </ItemGroup>
 
   <Target Name="SayWhichRuntimesArePacked" BeforeTargets="Pack">
-    <Message Importance="high" Text="cadconvert native runtimes packed: @(None->'%(RecursiveDir)', ' ')" />
-    <Warning Condition="'@(None)' == ''"
+    <Message Importance="high"
+             Text="cadconvert native runtimes packed: @(CadConvertRuntime->'%(RecursiveDir)', ' ')" />
+    <Warning Condition="'@(CadConvertRuntime)' == ''"
              Text="No native cadconvert library found under $(NativeRuntimesDir). The package will build and every call will fail at load time." />
   </Target>
 
