@@ -1799,10 +1799,13 @@ pub fn parse_tline(body: &str) -> crate::error::Result<TLine> {
     // and long tokens (17-digit floats) intentionally span line breaks.
     // The X_T writer ensures token-terminating spaces are placed so that
     // concatenation only happens within a single token, not between tokens.
-    let stripped: String = body
-        .chars()
-        .filter(|c| *c != '\n' && *c != '\r')
-        .collect();
+    //
+    // Reserved rather than collected. `collect` has no size hint through a
+    // filter, so it grows by doubling and lands on a 64 MiB buffer for a
+    // 35.4 MB body — the stripped text can only be shorter than what it came
+    // from, so say so.
+    let mut stripped = String::with_capacity(body.len());
+    stripped.extend(body.chars().filter(|c| *c != '\n' && *c != '\r'));
 
     let mut input = stripped.as_str();
 
@@ -1911,28 +1914,31 @@ pub fn parse_tline(body: &str) -> crate::error::Result<TLine> {
                 }
             }
         }
-        // Put the remaining digits back into input
-        let remaining = &all_digits[best_split..];
-        // We need to reconstruct input with the remaining digits prepended
-        let new_input = format!("{remaining}{input}");
-        // We'll return this as the remaining body
+        // The body is what is left, and what is left is already sitting in
+        // `stripped` — every step above only moved the start forward, and the
+        // digits to put back abut `input` because they were taken from it. So
+        // cut the front off in place rather than building a second 35 MB
+        // string to hold the same bytes.
+        let off = stripped.len() - input.len() - all_digits[best_split..].len();
+        stripped.drain(..off);
         return Ok(TLine {
             fmt_version,
             modeller_version,
             key_major,
             has_base_schema: true,
-            body: new_input,
+            body: stripped,
         });
     }
 
-    // Skip any remaining whitespace
-    let rest = input.trim_start().to_string();
+    // Skip any remaining whitespace, in place for the same reason.
+    let off = stripped.len() - input.trim_start().len();
+    stripped.drain(..off);
     Ok(TLine {
         fmt_version,
         modeller_version,
         key_major,
         has_base_schema: false,
-        body: rest,
+        body: stripped,
     })
 }
 

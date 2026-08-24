@@ -7,6 +7,16 @@
 //!
 //! `ps` is asked rather than a crate: this is a diagnostic that runs by hand on
 //! a developer's machine, and a dependency for it would ship to every user.
+//!
+//! # One run of this is not a measurement
+//!
+//! Resident size is what the allocator has taken from the kernel, not what the
+//! program is using, and it moves with size-class luck and with whatever the
+//! machine was doing. The same binary has reported the same stage as anything
+//! from 80 to 306 MB. Read the *shape* here — which step costs what, in what
+//! order — and take any number that matters from the median of at least five
+//! interleaved runs. Deterministic counts, `entity_bytes` and `scene_bytes`,
+//! are evidence; this is a map.
 
 fn rss_mb() -> f64 {
     let pid = std::process::id();
@@ -81,11 +91,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tline.key_major,
                 )?;
                 let fields: usize = entities.iter().map(|e| e.fields.len()).sum();
+                let before = last;
                 step("after parsing the entity graph", &mut last);
+                // Per entity means the graph's own cost, which is the step's
+                // delta. Dividing total resident size by the entity count —
+                // which this did — charges the graph for the file's two copies
+                // and the process baseline as well, and reported 638 bytes an
+                // entity where the graph's own share is nearer 490.
                 println!(
-                    "  ({} entities, {fields} fields between them — {:.0} bytes each as parsed)",
+                    "  ({} entities, {fields} fields between them — {:.0} bytes each, by this step's delta)",
                     entities.len(),
-                    (rss_mb() * 1e6) / entities.len().max(1) as f64
+                    ((last - before) * 1e6) / entities.len().max(1) as f64
                 );
             }
             step("after dropping the entity graph", &mut last);
