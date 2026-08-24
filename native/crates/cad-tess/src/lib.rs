@@ -96,10 +96,18 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
         .map(|g| (g.material, g.face_materials.clone()))
         .collect();
 
+    // One body at a time, and its faces in parallel.
+    //
+    // Both loops used to run in parallel, and the peak was the product: every
+    // body in flight holds all of its face patches at once, and rayon will
+    // start as many bodies as it has threads. The faces inside a body already
+    // saturate the machine — the pilot's largest is 513 700 triangles — so
+    // body-level parallelism bought almost no wall clock and multiplied the
+    // live set by the thread count.
     let results: Vec<(Mesh, Report)> = scene
         .geometry
-        .par_iter()
-        .zip(materials.par_iter())
+        .iter()
+        .zip(materials.iter())
         .map(|(g, (material, face_materials))| match &g.brep {
             // A debug run wants one part's faces, not an assembly's; every
             // probe in this crate prints per face, and fifty parts' worth of
