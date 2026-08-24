@@ -131,38 +131,55 @@ pub struct RawEntity {
     pub extra: Vec<FieldVal>,
 }
 
-/// The variable-length tails of one entity. See [`RawEntity::var`].
-#[derive(Debug, Clone, Default)]
-pub struct VarTail {
-    pub f64s: Vec<f64>,
-    pub i16s: Vec<i16>,
-    pub i32s: Vec<i64>,
-    pub ptrs: Vec<usize>,
-    pub chars: Vec<char>,
+/// The variable-length tail of one entity. See [`RawEntity::var`].
+///
+/// One of them, not five. The schema names a single `var_type` and the reader
+/// matches it once, so exactly one arm ever runs — and a struct of five `Vec`s
+/// carried four empty headers for every tail there was. On the pilot that is
+/// 213 166 tails and **852 664 empty headers, 20.5 MB of nothing**.
+#[derive(Debug, Clone)]
+pub enum VarTail {
+    F64(Vec<f64>),
+    I16(Vec<i16>),
+    /// `i64`, not `i32`: the reader widens on the way in and `var_i32` hands
+    /// back `&[i64]`.
+    I32(Vec<i64>),
+    Ptr(Vec<usize>),
+    Char(Vec<char>),
 }
 
 impl RawEntity {
-    /// The tail, made if this is the first thing to go in it.
-    fn tail(&mut self) -> &mut VarTail {
-        self.var.get_or_insert_with(Box::default)
-    }
-
     /// Read-only views of the tails. Empty where the entity has none, which is
     /// most of them, and without allocating to say so.
     pub fn var_f64(&self) -> &[f64] {
-        self.var.as_deref().map_or(&[], |v| &v.f64s)
+        match self.var.as_deref() {
+            Some(VarTail::F64(v)) => v,
+            _ => &[],
+        }
     }
     pub fn var_i16(&self) -> &[i16] {
-        self.var.as_deref().map_or(&[], |v| &v.i16s)
+        match self.var.as_deref() {
+            Some(VarTail::I16(v)) => v,
+            _ => &[],
+        }
     }
     pub fn var_i32(&self) -> &[i64] {
-        self.var.as_deref().map_or(&[], |v| &v.i32s)
+        match self.var.as_deref() {
+            Some(VarTail::I32(v)) => v,
+            _ => &[],
+        }
     }
     pub fn var_ptr(&self) -> &[usize] {
-        self.var.as_deref().map_or(&[], |v| &v.ptrs)
+        match self.var.as_deref() {
+            Some(VarTail::Ptr(v)) => v,
+            _ => &[],
+        }
     }
     pub fn var_char(&self) -> &[char] {
-        self.var.as_deref().map_or(&[], |v| &v.chars)
+        match self.var.as_deref() {
+            Some(VarTail::Char(v)) => v,
+            _ => &[],
+        }
     }
 }
 
@@ -587,44 +604,70 @@ fn read_entity_fields(
         } else {
             var_count
         };
-        match schema.var_type {
-            Some(VarType::F64) => {
-                for _ in 0..count {
-                    entity.tail().f64s.push(read_f64(input)?);
+        // Sized from the count in hand rather than grown into. The tails held
+        // 12.2 MB of capacity for 6.5 MB of data and 48 798 reallocations to
+        // get there.
+        //
+        // Nothing is stored when the count is zero: a variable entity with an
+        // empty tail keeps `var: None` and costs no box, which is what the old
+        // `tail()`-inside-the-loop shape did by accident and this does on
+        // purpose.
+        if count > 0 {
+            entity.var = match schema.var_type {
+                Some(VarType::F64) => {
+                    let mut v = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        v.push(read_f64(input)?);
+                    }
+                    Some(Box::new(VarTail::F64(v)))
                 }
-            }
-            Some(VarType::I16) => {
-                for _ in 0..count {
-                    entity.tail().i16s.push(read_int16(input)?);
+                Some(VarType::I16) => {
+                    let mut v = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        v.push(read_int16(input)?);
+                    }
+                    Some(Box::new(VarTail::I16(v)))
                 }
-            }
-            Some(VarType::I32) => {
-                for _ in 0..count {
-                    entity.tail().i32s.push(read_int32(input)? as i64);
+                Some(VarType::I32) => {
+                    let mut v = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        v.push(read_int32(input)? as i64);
+                    }
+                    Some(Box::new(VarTail::I32(v)))
                 }
-            }
-            Some(VarType::Ptr) => {
-                for _ in 0..count {
-                    entity.tail().ptrs.push(read_int32(input)? as usize);
+                Some(VarType::Ptr) => {
+                    let mut v = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        v.push(read_int32(input)? as usize);
+                    }
+                    Some(Box::new(VarTail::Ptr(v)))
                 }
-            }
-            Some(VarType::Char) | Some(VarType::RawChar) => {
-                for _ in 0..count {
-                    entity.tail().chars.push(read_raw_byte(input)?);
+                Some(VarType::Char) | Some(VarType::RawChar) => {
+                    let mut v = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        v.push(read_raw_byte(input)?);
+                    }
+                    Some(Box::new(VarTail::Char(v)))
                 }
-            }
-            Some(VarType::V3) => {
-                for _ in 0..count {
-                    entity.tail().f64s.push(read_f64(input)?);
-                    entity.tail().f64s.push(read_f64(input)?);
-                    entity.tail().f64s.push(read_f64(input)?);
+                // Three doubles an element, into the same tail the F64 arm
+                // fills: a variant of its own would hide every CHART, LIMIT
+                // and HULL point from `var_f64`.
+                Some(VarType::V3) => {
+                    let mut v = Vec::with_capacity(count * 3);
+                    for _ in 0..count {
+                        v.push(read_f64(input)?);
+                        v.push(read_f64(input)?);
+                        v.push(read_f64(input)?);
+                    }
+                    Some(Box::new(VarTail::F64(v)))
                 }
-            }
-            None => {
-                for _ in 0..count {
-                    let _ = read_int32(input)?;
+                None => {
+                    for _ in 0..count {
+                        let _ = read_int32(input)?;
+                    }
+                    None
                 }
-            }
+            };
         }
     }
 
