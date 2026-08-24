@@ -99,10 +99,21 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
     //
     // Both loops used to run in parallel, and the peak was the product: every
     // body in flight holds all of its face patches at once, and rayon will
-    // start as many bodies as it has threads. The faces inside a body already
-    // saturate the machine — the pilot's largest is 513 700 triangles — so
-    // body-level parallelism bought almost no wall clock and multiplied the
-    // live set by the thread count.
+    // start as many bodies as it has threads.
+    //
+    // What it costs is measured rather than assumed, and it is not free. Put
+    // back — `par_iter_mut` here, everything else unchanged, byte-identical
+    // output — three interleaved runs each:
+    //
+    //     Parasolid   276 MB, 25.5 s  ->  385 MB, 24.8 s
+    //     STEP        294 MB, 10.2 s  ->  408 MB,  7.5 s
+    //
+    // On the Parasolid it buys nothing: its faces already saturate the
+    // machine, the largest being 513 700 triangles. On the STEP, whose fifty
+    // parts are small enough that one body's faces do not, it is worth 27% of
+    // the clock — and 114 MB, which is the whole of what several rounds of
+    // work have taken off this program. Bounding it to two bodies would halve
+    // both halves of that and still spend fifty megabytes to save a second.
     //
     // Sequential also makes the exchange below possible: a body's mesh is
     // finished before the next one starts, so the boundary representation it
