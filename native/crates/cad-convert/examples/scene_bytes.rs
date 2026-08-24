@@ -18,7 +18,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("usage: scene_bytes <file.x_t|file.stp>");
         std::process::exit(2);
     };
-    let scene = cad_convert::read(std::path::Path::new(&path), &cad_convert::Options::default())?;
+    let mut scene =
+        cad_convert::read(std::path::Path::new(&path), &cad_convert::Options::default())?;
+    // Mesh it too, unless asked not to: the B-Rep is only half of what the
+    // scene holds, and the meshes are the half that survives into the writer.
+    if std::env::args().nth(2).as_deref() != Some("--brep-only") {
+        let quality = cad_tess::Options::default();
+        let _ = cad_tess::tessellate_scene(&mut scene, &quality);
+    }
 
     let mut total = Total::default();
     for geometry in &scene.geometry {
@@ -96,6 +103,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!("    {:<42} {:>8.1} MB", "counted", sum as f64 / 1e6);
+
+    // The meshes, by what is used and by what was taken. A Vec that grows by
+    // doubling ends up holding as much again as it needs, and the scene keeps
+    // that for as long as it keeps the mesh — which in a long-running process
+    // is the whole conversion and then some.
+    let (mut used, mut taken) = (0usize, 0usize);
+    let (mut n_pos, mut n_idx) = (0usize, 0usize);
+    for g in &scene.geometry {
+        let Some(m) = g.mesh.as_ref() else { continue };
+        n_pos += m.positions.len();
+        n_idx += m.indices.len();
+        used += m.positions.len() * 12 + m.normals.len() * 12 + m.uvs.len() * 8
+            + m.indices.len() * 4 + m.parts.len() * 12;
+        taken += m.positions.capacity() * 12
+            + m.normals.capacity() * 12
+            + m.uvs.capacity() * 8
+            + m.indices.capacity() * 4
+            + m.parts.capacity() * 12;
+    }
+    if taken > 0 {
+        println!(
+            "\n  the meshes: {n_pos} vertices, {} triangles",
+            n_idx / 3
+        );
+        println!("    {:<42} {:>8.1} MB", "in use", used as f64 / 1e6);
+        println!("    {:<42} {:>8.1} MB", "taken from the allocator", taken as f64 / 1e6);
+        println!(
+            "    {:<42} {:>8.1} MB  {:>5.1}% of what is used",
+            "slack, held for the scene's life",
+            (taken - used) as f64 / 1e6,
+            100.0 * (taken - used) as f64 / used as f64
+        );
+    }
     if total.pcurves > 0 {
         println!(
             "\n  a pcurve costs {:.0} bytes on average, and there are {} of them",

@@ -592,7 +592,36 @@ pub fn tessellate_solid(
         .collect();
 
     let reference = solid.geometric_bounds();
+
+    // How big the mesh will be, before a single vertex goes in.
+    //
+    // A Vec that grows by doubling keeps as much again as it needs, and the
+    // scene keeps that for as long as it keeps the mesh — on the pilot, 82.5 MB
+    // taken to hold 53.7 MB, and it is held for the life of the conversion.
+    // Every patch that will be accepted is already in hand here, so the totals
+    // are a sum rather than a guess.
+    //
+    // Two lengths per patch, and nothing else. Running the acceptance test here
+    // as well would be exact, but `escapes_body` calls `farthest` — a square
+    // root per vertex over 1.2 million of them — and doing it in a pass of its
+    // own touches every patch twice, once cold. That cost 25% of the
+    // conversion's wall clock to save a reservation that was already almost
+    // exact: on the pilot every one of 11 214 faces is accepted, so the
+    // over-reservation is the rejected faces, and there are none.
+    let (mut want_vertices, mut want_indices) = (0usize, 0usize);
+    for (_, _, result) in faces.iter() {
+        if let Ok(patch) = result {
+            want_vertices += patch.positions.len();
+            want_indices += patch.indices.len();
+        }
+    }
+
     let mut mesh = Mesh::default();
+    mesh.positions.reserve_exact(want_vertices);
+    // Normals are pushed beside positions at every site that pushes either, and
+    // `Mesh` documents them as empty or exactly as long as positions.
+    mesh.normals.reserve_exact(want_vertices);
+    mesh.indices.reserve_exact(want_indices);
     let mut face_ranges: Vec<(FaceId, u32, usize, usize)> = Vec::new();
     let mut crossed: rustc_hash::FxHashSet<u32> = Default::default();
     let mut report = Report::default();
