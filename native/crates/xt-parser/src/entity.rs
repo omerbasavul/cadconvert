@@ -143,6 +143,33 @@ pub struct RawEntity {
     extra: Span,
 }
 
+// ── Nine bytes a field, tried and reverted ─────────────────────────────────
+//
+// A `FieldVal` is an enum whose largest payload is eight bytes, so it is
+// sixteen: eight of tag and padding on every one of the pilot's 2 919 460
+// fields. Split into a `Vec<u8>` of tags and a `Vec<u64>` of payloads, with
+// the three boxed variants' numbers moved into an array of their own, a
+// field costs nine bytes and no allocation. It was written, it worked, every
+// test passed and all three output files were byte for byte identical.
+//
+// It is not here, and the reason is worth more than the change was.
+//
+//   * The graph really does shrink. Parsing alone peaked at 148 MB before
+//     and 131 after; under the system allocator, 187 against 164.
+//   * The process peak did not move. Three interleaved runs with the
+//     allocator's purge delay set to zero — so that the measurement is not a
+//     function of how long the run takes — gave 215 MB against 212 on the
+//     Parasolid and 228 against 221 on the STEP.
+//   * It cost 16% of the wall clock. Not in the parse, which is 0.3 seconds
+//     either way, but in the lowering, which reads fields several million
+//     times and now takes two cache misses to reach one where it took one.
+//
+// The peak is not here. Reading the pilot peaks at 156 MB and tessellating
+// it at 198, and by the time the tessellator runs the reader's memory has
+// been handed back — so twenty megabytes off the graph is twenty megabytes
+// off a number that is not the maximum. Look in `cad-tess` before looking
+// here again.
+
 /// A run of fields inside the arena.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Span {
