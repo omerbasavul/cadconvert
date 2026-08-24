@@ -47,6 +47,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  {n} entities, {fields} fields, {extra} extra");
     println!("    Mat3 fields  {mat3:>8}  ({:.3}% of them)", 100.0 * mat3 as f64 / (fields + extra) as f64);
     println!("    Vec3 fields  {vec3:>8}  ({:.1}%)", 100.0 * vec3 as f64 / (fields + extra) as f64);
+    // Every variant, because which of them sizes the enum is the whole
+    // question: 24 bytes for a Vec3 makes every field 32, and 95% of fields
+    // hold eight or less.
+    let mut by_variant = std::collections::BTreeMap::<&str, usize>::new();
+    for e in &entities {
+        for f in e.fields.iter().chain(e.extra.iter()) {
+            *by_variant.entry(match f {
+                FieldVal::Int(_) => "Int(8)",
+                FieldVal::Float(_) => "Float(8)",
+                FieldVal::Short(_) => "Short(2)",
+                FieldVal::Char(_) => "Char(4)",
+                FieldVal::Bool(_) => "Bool(1)",
+                FieldVal::Byte(_) => "Byte(1)",
+                FieldVal::Ptr(_) => "Ptr(8)",
+                FieldVal::Vec3(_) => "Vec3(24)",
+                FieldVal::Interval(_) => "Interval(16)",
+                FieldVal::Mat3(_) => "Mat3(boxed)",
+            }).or_default() += 1;
+        }
+    }
+    let total: usize = by_variant.values().sum();
+    println!("  every field by variant:");
+    for (name, n) in &by_variant {
+        println!("    {name:<14} {n:>9}  {:>5.1}%", 100.0 * *n as f64 / total as f64);
+    }
     println!("    entities with any variable-length data: {with_var} ({:.1}%), {var_items} items between them",
         100.0 * with_var as f64 / n as f64);
     println!("\n  where the bytes are, as it stands:");
