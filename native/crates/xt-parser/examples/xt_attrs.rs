@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ATTRIB_DEF.identifier (field 1).
     let mut def_names: HashMap<usize, String> = HashMap::new();
     for e in entities.iter().filter(|e| e.type_id == 80) {
-        let ident = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = by_index.get(&ident) {
             let name: String = id_e.var_char().iter().collect();
             def_names.insert(e.index, name);
@@ -70,8 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reflect: Vec<(usize, f64)> = Vec::new();
 
     for e in entities.iter().filter(|e| e.type_id == 81) {
-        let def = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
-        let owner = e.fields.get(2).map(|f| f.as_ptr()).unwrap_or(0);
+        let def = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let owner = entities.fields(e).get(2).map(|f| f.as_ptr()).unwrap_or(0);
         let Some(def_name) = def_names.get(&def) else {
             continue;
         };

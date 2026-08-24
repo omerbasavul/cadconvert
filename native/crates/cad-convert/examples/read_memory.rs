@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tline.has_base_schema,
                     tline.key_major,
                 )?;
-                let fields: usize = entities.iter().map(|e| e.fields.len()).sum();
+                let fields = entities.arena_len();
                 let before = last;
                 step("after parsing the entity graph", &mut last);
                 // Per entity means the graph's own cost, which is the step's

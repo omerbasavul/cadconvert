@@ -57,7 +57,9 @@ pub fn parse_xt_file<P: AsRef<Path>>(path: P) -> Result<XtFile> {
 /// bodies on top of the same entities.
 pub struct RawFile {
     pub header: XtHeader,
-    pub entities: Vec<entity::RawEntity>,
+    /// Every entity, and the one array their fields live in. Derefs to the
+    /// entities; ask it for a field.
+    pub entities: entity::Entities,
     pub truncated: Option<entity::Truncation>,
 }
 

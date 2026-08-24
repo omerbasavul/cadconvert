@@ -28,7 +28,7 @@ fn main() {
     let n = entities.len();
     for (i, e) in entities.iter().enumerate().skip(n.saturating_sub(5)) {
         eprintln!("[{:3}] type={:3} idx={:4} fields={} var_f64={} var_i16={} var_ptr={} var_char={}",
-            i, e.type_id, e.index, e.fields.len(),
+            i, e.type_id, e.index, entities.fields(e).len(),
             e.var_f64().len(), e.var_i16().len(), e.var_ptr().len(), e.var_char().len());
     }
 }

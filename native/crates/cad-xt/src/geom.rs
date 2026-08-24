@@ -13,39 +13,39 @@
 use cad_ir::brep::{Curve, Curve2, NurbsCurve, NurbsCurve2, NurbsSurface, Surface};
 use cad_ir::math::{Frame, Interval, Vec2, Vec3};
 use rustc_hash::FxHashMap;
-use xt_parser::entity::RawEntity;
+use xt_parser::entity::{Entities, RawEntity};
 use xt_parser::schema as xt;
 
 /// Entity lookup by handle.
 pub type Index<'a> = FxHashMap<usize, &'a RawEntity>;
 
-fn v3(e: &RawEntity, i: usize) -> Vec3 {
-    let a = e.fields.get(i).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
+fn v3(entities: &Entities, e: &RawEntity, i: usize) -> Vec3 {
+    let a = entities.fields(e).get(i).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
     Vec3::new(a[0], a[1], a[2])
 }
 
-fn f64_at(e: &RawEntity, i: usize) -> f64 {
-    e.fields.get(i).map(|f| f.as_f64()).unwrap_or(0.0)
+fn f64_at(entities: &Entities, e: &RawEntity, i: usize) -> f64 {
+    entities.fields(e).get(i).map(|f| f.as_f64()).unwrap_or(0.0)
 }
 
 /// Integer field — degrees, counts and dims arrive as `Short`, and reading
 /// them through a float accessor that did not know `Short` is precisely how
 /// every spline in the Solid Edge file flattened to degree zero.
-pub(crate) fn int_at(e: &RawEntity, i: usize) -> usize {
-    e.fields.get(i).map(|f| f.as_i64().max(0) as usize).unwrap_or(0)
+pub(crate) fn int_at(entities: &Entities, e: &RawEntity, i: usize) -> usize {
+    entities.fields(e).get(i).map(|f| f.as_i64().max(0) as usize).unwrap_or(0)
 }
 
-fn ptr(e: &RawEntity, i: usize) -> usize {
-    e.fields.get(i).map(|f| f.as_ptr()).unwrap_or(0)
+fn ptr(entities: &Entities, e: &RawEntity, i: usize) -> usize {
+    entities.fields(e).get(i).map(|f| f.as_ptr()).unwrap_or(0)
 }
 
 /// The geometry entity's own sense character, at common field 6.
-pub fn geom_sense(e: &RawEntity) -> char {
-    e.fields.get(6).map(|f| f.as_char()).unwrap_or('+')
+pub fn geom_sense(entities: &Entities, e: &RawEntity) -> char {
+    entities.fields(e).get(6).map(|f| f.as_char()).unwrap_or('+')
 }
 
 /// Lower a surface entity, or say why it cannot be.
-pub fn surface(e: &RawEntity, index: &Index) -> Result<Surface, String> {
+pub fn surface(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Surface, String> {
     match e.type_id {
         xt::PLANE => {
             // pvec[7], normal[8], and — measured on the Solid Edge corpus,
@@ -56,27 +56,27 @@ pub fn surface(e: &RawEntity, index: &Index) -> Result<Surface, String> {
             // half a kilometre from the part, with the pcurves' v ≈ +500 m
             // bringing geometry back. An arbitrary completion axis turns those
             // coordinates into points a kilometre off the body.
-            let normal = v3(e, 8);
-            let stored_x = v3(e, 9);
+            let normal = v3(entities, e, 8);
+            let stored_x = v3(entities, e, 9);
             let ref_dir = if stored_x.length_squared() > 1e-12 {
                 stored_x
             } else {
                 normal.any_perpendicular()
             };
             Ok(Surface::Plane {
-                frame: Frame::new(v3(e, 7), normal, ref_dir),
+                frame: Frame::new(v3(entities, e, 7), normal, ref_dir),
             })
         }
         xt::CYLINDER => Ok(Surface::Cylinder {
-            frame: Frame::new(v3(e, 7), v3(e, 8), v3(e, 10)),
-            radius: f64_at(e, 9),
+            frame: Frame::new(v3(entities, e, 7), v3(entities, e, 8), v3(entities, e, 10)),
+            radius: f64_at(entities, e, 9),
         }),
         xt::CONE => {
-            let sin_ha = f64_at(e, 10);
-            let cos_ha = f64_at(e, 11);
+            let sin_ha = f64_at(entities, e, 10);
+            let cos_ha = f64_at(entities, e, 11);
             Ok(Surface::Cone {
-                frame: Frame::new(v3(e, 7), v3(e, 8), v3(e, 12)),
-                radius: f64_at(e, 9),
+                frame: Frame::new(v3(entities, e, 7), v3(entities, e, 8), v3(entities, e, 12)),
+                radius: f64_at(entities, e, 9),
                 // The half-angle arrives split into its sine and cosine, and
                 // it opens the same way cad_ir's does: measured over this
                 // assembly's 1,207 conical boundary loops, taking it as
@@ -89,56 +89,56 @@ pub fn surface(e: &RawEntity, index: &Index) -> Result<Surface, String> {
             })
         }
         xt::SPHERE => Ok(Surface::Sphere {
-            frame: Frame::new(v3(e, 7), v3(e, 9), v3(e, 10)),
-            radius: f64_at(e, 8),
+            frame: Frame::new(v3(entities, e, 7), v3(entities, e, 9), v3(entities, e, 10)),
+            radius: f64_at(entities, e, 8),
         }),
         xt::TORUS => Ok(Surface::Torus {
-            frame: Frame::new(v3(e, 7), v3(e, 8), v3(e, 11)),
-            major_radius: f64_at(e, 9),
-            minor_radius: f64_at(e, 10),
+            frame: Frame::new(v3(entities, e, 7), v3(entities, e, 8), v3(entities, e, 11)),
+            major_radius: f64_at(entities, e, 9),
+            minor_radius: f64_at(entities, e, 10),
         }),
         xt::SWEPT_SURF => {
             let profile = index
-                .get(&ptr(e, 7))
+                .get(&ptr(entities, e, 7))
                 .ok_or("SWEPT_SURF has no profile curve")?;
-            let lowered = curve(profile, index)?;
+            let lowered = curve(entities, profile, index)?;
             Ok(Surface::LinearExtrusion {
                 profile: Box::new(lowered),
-                direction: v3(e, 8),
+                direction: v3(entities, e, 8),
             })
         }
         xt::SPUN_SURF => {
             let profile = index
-                .get(&ptr(e, 7))
+                .get(&ptr(entities, e, 7))
                 .ok_or("SPUN_SURF has no profile curve")?;
-            let axis_point = v3(e, 8);
-            let axis_dir = v3(e, 9);
+            let axis_point = v3(entities, e, 8);
+            let axis_dir = v3(entities, e, 9);
             Ok(Surface::Revolution {
-                profile: Box::new(curve(profile, index)?),
+                profile: Box::new(curve(entities, profile, index)?),
                 frame: Frame::new(axis_point, axis_dir, axis_dir.any_perpendicular()),
             })
         }
         xt::B_SURFACE => {
             let inner = index
-                .get(&ptr(e, 7))
+                .get(&ptr(entities, e, 7))
                 .ok_or("B_SURFACE points at nothing")?;
-            nurbs_surface(inner, index).map(Surface::Nurbs)
+            nurbs_surface(entities, inner, index).map(Surface::Nurbs)
         }
-        xt::NURBS_SURF => nurbs_surface(e, index).map(Surface::Nurbs),
+        xt::NURBS_SURF => nurbs_surface(entities, e, index).map(Surface::Nurbs),
         // OFFSET_SURF: base surface at [9], the offset distance at [10].
         // A face on one is a real face — a wall thickened from another, a
         // relieved seat — and skipping it left its whole boundary open on
         // every neighbour.
         xt::OFFSET_SURF => {
             let base = index
-                .get(&ptr(e, 9))
+                .get(&ptr(entities, e, 9))
                 .ok_or("OFFSET_SURF has no base surface")?;
-            let distance = f64_at(e, 10);
+            let distance = f64_at(entities, e, 10);
             if !distance.is_finite() {
                 return Err("OFFSET_SURF has no offset distance".into());
             }
-            let signed = if geom_sense(e) == '-' { -distance } else { distance };
-            let lowered = surface(base, index)?;
+            let signed = if geom_sense(entities, e) == '-' { -distance } else { distance };
+            let lowered = surface(entities, base, index)?;
             if std::env::var_os("XT_OFFSET_TRACE").is_some() {
                 let shape = match &lowered {
                     cad_ir::brep::Surface::Nurbs(n) => format!(
@@ -171,14 +171,14 @@ pub fn surface(e: &RawEntity, index: &Index) -> Result<Surface, String> {
         // other type together.
         xt::BLEND_BOUND => {
             let blend = index
-                .get(&ptr(e, 8))
+                .get(&ptr(entities, e, 8))
                 .filter(|b| b.type_id == xt::BLENDED_EDGE)
                 .ok_or("BLEND_BOUND does not name a blend")?;
-            let which = int_at(e, 7).min(1);
+            let which = int_at(entities, e, 7).min(1);
             let mate = index
-                .get(&ptr(blend, 8 + which))
+                .get(&ptr(entities, blend, 8 + which))
                 .ok_or("the blend has no surface on that side")?;
-            surface(mate, index)
+            surface(entities, mate, index)
         }
         // A blend can arrive as a face's own surface and not only as the thing
         // a BLEND_BOUND points at, and `blend_surface` would lower it. It is
@@ -192,29 +192,29 @@ pub fn surface(e: &RawEntity, index: &Index) -> Result<Surface, String> {
 }
 
 /// Lower a curve entity, or say why it cannot be.
-pub fn curve(e: &RawEntity, index: &Index) -> Result<Curve, String> {
+pub fn curve(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Curve, String> {
     match e.type_id {
         xt::LINE => Ok(Curve::Line {
-            origin: v3(e, 7),
-            direction: v3(e, 8),
+            origin: v3(entities, e, 7),
+            direction: v3(entities, e, 8),
         }),
         xt::CIRCLE => Ok(Curve::Circle {
-            frame: Frame::new(v3(e, 7), v3(e, 8), v3(e, 9)),
-            radius: f64_at(e, 10),
+            frame: Frame::new(v3(entities, e, 7), v3(entities, e, 8), v3(entities, e, 9)),
+            radius: f64_at(entities, e, 10),
         }),
         xt::ELLIPSE => Ok(Curve::Ellipse {
-            frame: Frame::new(v3(e, 7), v3(e, 8), v3(e, 9)),
-            semi_major: f64_at(e, 10),
-            semi_minor: f64_at(e, 11),
+            frame: Frame::new(v3(entities, e, 7), v3(entities, e, 8), v3(entities, e, 9)),
+            semi_major: f64_at(entities, e, 10),
+            semi_minor: f64_at(entities, e, 11),
         }),
         xt::B_CURVE => {
-            let inner = index.get(&ptr(e, 7)).ok_or("B_CURVE points at nothing")?;
-            nurbs_curve(inner, index).map(Curve::Nurbs)
+            let inner = index.get(&ptr(entities, e, 7)).ok_or("B_CURVE points at nothing")?;
+            nurbs_curve(entities, inner, index).map(Curve::Nurbs)
         }
-        xt::NURBS_CURVE => nurbs_curve(e, index).map(Curve::Nurbs),
+        xt::NURBS_CURVE => nurbs_curve(entities, e, index).map(Curve::Nurbs),
         xt::TRIMMED_CURVE => {
             let basis = index
-                .get(&ptr(e, 7))
+                .get(&ptr(entities, e, 7))
                 .ok_or("TRIMMED_CURVE points at nothing")?;
             // An SP_CURVE has no closed form: it becomes a polyline by being
             // sampled, and the sampling is indexed 0..n. The trim window is in
@@ -229,10 +229,10 @@ pub fn curve(e: &RawEntity, index: &Index) -> Result<Curve, String> {
             // trim is applied where it can be understood and no wrapper is
             // needed.
             if basis.type_id == xt::SP_CURVE {
-                return sp_curve_polyline(e, index);
+                return sp_curve_polyline(entities, e, index);
             }
-            let base = curve(basis, index)?;
-            let (t0, t1) = (f64_at(e, 10), f64_at(e, 11));
+            let base = curve(entities, basis, index)?;
+            let (t0, t1) = (f64_at(entities, e, 10), f64_at(entities, e, 11));
             let range = Interval::new(t0.min(t1), t0.max(t1));
             // A curve with no closed form becomes a polyline, indexed 0..n by
             // the samples that were taken. The window that trims it is in
@@ -285,9 +285,9 @@ pub fn curve(e: &RawEntity, index: &Index) -> Result<Curve, String> {
         // is faithful to within the chart's own spacing.
         xt::INTERSECTION => {
             let chart = index
-                .get(&ptr(e, 8))
+                .get(&ptr(entities, e, 8))
                 .ok_or("INTERSECTION has no chart")?;
-            let points = chart_points(chart);
+            let points = chart_points(entities, chart);
             if points.len() < 2 {
                 return Err("intersection chart has fewer than two points".into());
             }
@@ -296,7 +296,7 @@ pub fn curve(e: &RawEntity, index: &Index) -> Result<Curve, String> {
         }
         // As an edge's 3D geometry an SP_CURVE is materialised by sampling —
         // as a fin's parameter-space curve it stays 2D via [`pcurve_of`].
-        xt::SP_CURVE => sp_curve_polyline(e, index),
+        xt::SP_CURVE => sp_curve_polyline(entities, e, index),
         other => Err(format!("curve type {other} not lowered yet")),
     }
 }
@@ -427,20 +427,20 @@ pub fn intersection_polyline(
 ///
 /// So the expensive reading is done where it is the only reading, and not
 /// where a cheaper one is already right.
-pub fn surface_for_curve(e: &RawEntity, index: &Index) -> Result<Surface, String> {
+pub fn surface_for_curve(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Surface, String> {
     if e.type_id == xt::BLENDED_EDGE {
-        return blend_surface(e, index);
+        return blend_surface(entities, e, index);
     }
     if e.type_id == xt::BLEND_BOUND
         && let Some(blend) = index
-            .get(&ptr(e, 8))
+            .get(&ptr(entities, e, 8))
             .filter(|b| b.type_id == xt::BLENDED_EDGE)
     {
         // The boundary of a blend is the blend, restricted; for computing a
         // curve on it the blend itself is what is wanted.
-        return blend_surface(blend, index);
+        return blend_surface(entities, blend, index);
     }
-    surface(e, index)
+    surface(entities, e, index)
 }
 
 /// The rolling ball's centre line: where a ball of the blend's radius sits so
@@ -455,20 +455,20 @@ pub fn surface_for_curve(e: &RawEntity, index: &Index) -> Result<Surface, String
 ///
 /// Which way the centre lies off the surface is not stated, so both are tried
 /// and judged against the file's own sparse sampling of the same curve.
-fn blend_spine(be: &RawEntity, index: &Index, radius: f64) -> Option<(Vec<Vec3>, Surface, Surface)> {
-    let a = surface(index.get(&ptr(be, 8))?, index).ok()?;
-    let b = surface(index.get(&ptr(be, 9))?, index).ok()?;
+fn blend_spine(entities: &Entities, be: &RawEntity, index: &Index, radius: f64) -> Option<(Vec<Vec3>, Surface, Surface)> {
+    let a = surface(entities, index.get(&ptr(entities, be, 8))?, index).ok()?;
+    let b = surface(entities, index.get(&ptr(entities, be, 9))?, index).ok()?;
 
     // The file's own samples of the spine: where it starts, where it ends, and
     // what the walk is not allowed to stray from.
-    let spine = index.get(&ptr(be, 10))?;
-    let chart = index.get(&ptr(spine, 8)).filter(|c| c.type_id == xt::CHART)?;
-    let samples = chart_points(chart);
+    let spine = index.get(&ptr(entities, be, 10))?;
+    let chart = index.get(&ptr(entities, spine, 8)).filter(|c| c.type_id == xt::CHART)?;
+    let samples = chart_points(entities, chart);
     if samples.len() < 2 {
         return None;
     }
     let (head, tail) = (samples[0], samples[samples.len() - 1]);
-    let slack = f64_at(chart, 3).abs().max((tail - head).length() * 0.25) + radius * 0.01;
+    let slack = f64_at(entities, chart, 3).abs().max((tail - head).length() * 0.25) + radius * 0.01;
     let near_samples = |q: Vec3| {
         samples
             .windows(2)
@@ -591,18 +591,18 @@ fn blend_spine(be: &RawEntity, index: &Index, radius: f64) -> Option<(Vec<Vec3>,
 /// Stored as a degree-one grid through those arcs, so downstream it is an
 /// ordinary surface: invertible exactly, cell by cell, and tessellatable with
 /// no special case anywhere.
-pub fn blend_surface(be: &RawEntity, index: &Index) -> Result<Surface, String> {
+pub fn blend_surface(entities: &Entities, be: &RawEntity, index: &Index) -> Result<Surface, String> {
 
-    let blend_type = be.fields.get(7).map(|f| f.as_char()).unwrap_or('?');
+    let blend_type = entities.fields(be).get(7).map(|f| f.as_char()).unwrap_or('?');
     if blend_type != 'R' {
         return Err(format!("blend type {blend_type:?} is not a rolling ball"));
     }
-    let radius = f64_at(be, 11).abs();
+    let radius = f64_at(entities, be, 11).abs();
     if !(radius.is_finite() && radius > 0.0) {
         return Err("the blend states no radius".into());
     }
     let (spine, a, b) =
-        blend_spine(be, index, radius).ok_or("the ball's centre line could not be walked")?;
+        blend_spine(entities, be, index, radius).ok_or("the ball's centre line could not be walked")?;
     if spine.len() < 2 {
         return Err("the centre line came out too short".into());
     }
@@ -843,8 +843,8 @@ pub fn blend_rail_from(
 /// say they are cross-sections of the blend, one whole sweep of the rolling
 /// ball from one contact to the other. That is the shape a caller can rebuild
 /// from the edge's own two vertices without evaluating the blend at all.
-pub fn blend_cross_section<'a>(e: &RawEntity, index: &Index<'a>) -> Option<&'a RawEntity> {
-    blend_parameter_curve(e, index).and_then(|(surf, across, _)| across.then_some(surf))
+pub fn blend_cross_section<'a>(entities: &Entities, e: &RawEntity, index: &Index<'a>) -> Option<&'a RawEntity> {
+    blend_parameter_curve(entities, e, index).and_then(|(surf, across, _)| across.then_some(surf))
 }
 
 /// A parameter curve on a blend, and which way it runs.
@@ -853,24 +853,24 @@ pub fn blend_cross_section<'a>(e: &RawEntity, index: &Index<'a>) -> Option<&'a R
 /// cross-section, `v` sweeping from one contact to the other — and, when it
 /// runs *along* it instead, which of the two mating surfaces it is the ball's
 /// contact track on: `false` for the first, `true` for the second.
-pub fn blend_parameter_curve<'a>(
+pub fn blend_parameter_curve<'a>(entities: &Entities, 
     e: &RawEntity,
     index: &Index<'a>,
 ) -> Option<(&'a RawEntity, bool, bool)> {
     let e = if e.type_id == xt::TRIMMED_CURVE {
-        index.get(&ptr(e, 7))?
+        index.get(&ptr(entities, e, 7))?
     } else {
         e
     };
     if e.type_id != xt::SP_CURVE {
         return None;
     }
-    let surf = index.get(&ptr(e, 7))?;
+    let surf = index.get(&ptr(entities, e, 7))?;
     if surf.type_id != xt::BLENDED_EDGE {
         return None;
     }
     let probe = std::env::var_os("XT_SECTION_PROBE").is_some();
-    let n2 = match nurbs_curve2(index.get(&ptr(e, 8))?, index) {
+    let n2 = match nurbs_curve2(entities, index.get(&ptr(entities, e, 8))?, index) {
         Ok(n) => n,
         Err(why) => {
             if probe {
@@ -914,19 +914,19 @@ pub fn blend_parameter_curve<'a>(
 /// each fin's SP_CURVE — so without this, every tolerant edge is lost. The
 /// sample density follows the spline's own complexity and the polyline then
 /// behaves like any other curve: invertible, discretisable, range-recoverable.
-pub fn sp_curve_polyline(e: &RawEntity, index: &Index) -> Result<Curve, String> {
+pub fn sp_curve_polyline(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Curve, String> {
     // A fin's parameter curve is routinely a TRIMMED_CURVE wrapping the
     // SP_CURVE, carrying the exact parameter window; unwrap and honour it.
     if e.type_id == xt::TRIMMED_CURVE {
         let basis = index
-            .get(&ptr(e, 7))
+            .get(&ptr(entities, e, 7))
             .ok_or("trimmed pcurve's basis does not exist")?;
-        let (t0, t1) = (f64_at(e, 10), f64_at(e, 11));
+        let (t0, t1) = (f64_at(entities, e, 10), f64_at(entities, e, 11));
         if std::env::var_os("XT_SPC_FIELDS").is_some() {
             println!(
                 "[trim] #{} fields {:?}",
                 e.index,
-                e.fields
+                entities.fields(e)
                     .iter()
                     .enumerate()
                     .map(|(i, f)| format!("{i}:{f:?}"))
@@ -934,12 +934,12 @@ pub fn sp_curve_polyline(e: &RawEntity, index: &Index) -> Result<Curve, String> 
                     .join(" ")
             );
         }
-        return sp_curve_polyline_over(basis, index, Some((t0.min(t1), t0.max(t1))));
+        return sp_curve_polyline_over(entities, basis, index, Some((t0.min(t1), t0.max(t1))));
     }
-    sp_curve_polyline_over(e, index, None)
+    sp_curve_polyline_over(entities, e, index, None)
 }
 
-fn sp_curve_polyline_over(
+fn sp_curve_polyline_over(entities: &Entities, 
     e: &RawEntity,
     index: &Index,
     window: Option<(f64, f64)>,
@@ -948,13 +948,13 @@ fn sp_curve_polyline_over(
         return Err(format!("expected SP_CURVE, got type {}", e.type_id));
     }
     let surf_entity = index
-        .get(&ptr(e, 7))
+        .get(&ptr(entities, e, 7))
         .ok_or("SP_CURVE's surface does not exist")?;
-    let surf = surface(surf_entity, index)?;
+    let surf = surface(entities, surf_entity, index)?;
     let bcurve = index
-        .get(&ptr(e, 8))
+        .get(&ptr(entities, e, 8))
         .ok_or("SP_CURVE has no parameter curve")?;
-    let n2 = nurbs_curve2(bcurve, index)?;
+    let n2 = nurbs_curve2(entities, bcurve, index)?;
 
     let samples = (n2.control_points.len() * n2.degree.max(1) * 4).clamp(24, 128);
     let knots = &n2.knots;
@@ -1113,19 +1113,19 @@ fn sp_curve_polyline_over(
 }
 
 /// A fin's pcurve, when its curve pointer is an SP_CURVE.
-pub fn pcurve_of(e: &RawEntity, index: &Index) -> Option<Curve2> {
+pub fn pcurve_of(entities: &Entities, e: &RawEntity, index: &Index) -> Option<Curve2> {
     if e.type_id != xt::SP_CURVE {
         return None;
     }
-    let bcurve = index.get(&ptr(e, 8))?;
-    nurbs_curve2(bcurve, index).ok().map(Curve2::Nurbs)
+    let bcurve = index.get(&ptr(entities, e, 8))?;
+    nurbs_curve2(entities, bcurve, index).ok().map(Curve2::Nurbs)
 }
 
 /// CHART (40): the first point lives in fixed field 6 (the h-vector the base
 /// schema declares), and the remaining points are bare `x y z` runs in the
 /// variable tail — measured on the Solid Edge corpus, where a three-point
 /// chart is `fields[6] = p₀` plus six floats.
-fn chart_points(chart: &RawEntity) -> Vec<Vec3> {
+fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
     let mut out = Vec::new();
     // Field 6 is the chart's first point. The schema calls it `hvec`, and
     // leaving it out was measured: `chart_count` counts it, 5,357 of 5,357
@@ -1138,7 +1138,7 @@ fn chart_points(chart: &RawEntity) -> Vec<Vec3> {
     // point sits further from the second than the whole rest of the chart
     // spans, by a hundredfold. A chart that long with a step that short is
     // not a curve; the point is dropped and the chart stands on the rest.
-    if let Some(first) = chart.fields.get(6).map(|f| f.as_vec3())
+    if let Some(first) = entities.fields(chart).get(6).map(|f| f.as_vec3())
         && first.iter().all(|v| v.is_finite())
     {
         let first = Vec3::new(first[0], first[1], first[2]);
@@ -1178,9 +1178,9 @@ fn chart_points(chart: &RawEntity) -> Vec<Vec3> {
         eprintln!(
             "[chart] #{} {} fields, var_f64 {} values, first field 6 = {:?}, points: {:?}",
             chart.index,
-            chart.fields.len(),
+            entities.fields(chart).len(),
             chart.var_f64().len(),
-            chart.fields.get(6),
+            entities.fields(chart).get(6),
             out.iter().map(|p| format!("({:.3},{:.3},{:.3})", p.x, p.y, p.z)).collect::<Vec<_>>()
         );
     }
@@ -1211,22 +1211,22 @@ fn chart_points(chart: &RawEntity) -> Vec<Vec3> {
 /// NURBS_CURVE fields: degree[0], n_vertices[1], vertex_dim[2], n_knots[3],
 /// knot_type[4], periodic[5], closed[6], rational[7], (form[8]), vertices[9],
 /// knot_mult[10], knot[11].
-fn nurbs_curve(e: &RawEntity, index: &Index) -> Result<NurbsCurve, String> {
+fn nurbs_curve(entities: &Entities, e: &RawEntity, index: &Index) -> Result<NurbsCurve, String> {
     if e.type_id != xt::NURBS_CURVE {
         return Err(format!("expected NURBS_CURVE, got type {}", e.type_id));
     }
-    let degree = int_at(e, 0);
-    let n_verts = int_at(e, 1);
-    let dim = int_at(e, 2);
-    let periodic = e.fields.get(5).map(|f| f.as_bool()).unwrap_or(false);
-    let closed = e.fields.get(6).map(|f| f.as_bool()).unwrap_or(false);
-    let rational = e.fields.get(7).map(|f| f.as_bool()).unwrap_or(false);
+    let degree = int_at(entities, e, 0);
+    let n_verts = int_at(entities, e, 1);
+    let dim = int_at(entities, e, 2);
+    let periodic = entities.fields(e).get(5).map(|f| f.as_bool()).unwrap_or(false);
+    let closed = entities.fields(e).get(6).map(|f| f.as_bool()).unwrap_or(false);
+    let rational = entities.fields(e).get(7).map(|f| f.as_bool()).unwrap_or(false);
 
     let raw = index
-        .get(&ptr(e, 9))
+        .get(&ptr(entities, e, 9))
         .map(|v| v.var_f64())
         .unwrap_or(&[]);
-    let knots = expanded_knots(e, 10, 11, index)?;
+    let knots = expanded_knots(entities, e, 10, 11, index)?;
 
     let (control_points, weights) = split_poles(raw, n_verts, dim, rational)?;
     Ok(NurbsCurve {
@@ -1239,10 +1239,10 @@ fn nurbs_curve(e: &RawEntity, index: &Index) -> Result<NurbsCurve, String> {
 }
 
 /// The 2D form of a NURBS curve, for SP_CURVE parameter-space geometry.
-fn nurbs_curve2(e: &RawEntity, index: &Index) -> Result<NurbsCurve2, String> {
+fn nurbs_curve2(entities: &Entities, e: &RawEntity, index: &Index) -> Result<NurbsCurve2, String> {
     let e = if e.type_id == xt::B_CURVE {
         index
-            .get(&ptr(e, 7))
+            .get(&ptr(entities, e, 7))
             .ok_or("B_CURVE points at nothing")?
     } else {
         &e
@@ -1250,15 +1250,15 @@ fn nurbs_curve2(e: &RawEntity, index: &Index) -> Result<NurbsCurve2, String> {
     if e.type_id != xt::NURBS_CURVE {
         return Err(format!("expected NURBS_CURVE, got type {}", e.type_id));
     }
-    let degree = int_at(e, 0);
-    let n_verts = int_at(e, 1);
-    let dim = int_at(e, 2);
-    let rational = e.fields.get(7).map(|f| f.as_bool()).unwrap_or(false);
+    let degree = int_at(entities, e, 0);
+    let n_verts = int_at(entities, e, 1);
+    let dim = int_at(entities, e, 2);
+    let rational = entities.fields(e).get(7).map(|f| f.as_bool()).unwrap_or(false);
     let raw = index
-        .get(&ptr(e, 9))
+        .get(&ptr(entities, e, 9))
         .map(|v| v.var_f64())
         .unwrap_or(&[]);
-    let knots = expanded_knots(e, 10, 11, index)?;
+    let knots = expanded_knots(entities, e, 10, 11, index)?;
 
     // 2D control points: dim 2, or dim 3 homogeneous when rational.
     let per = if raw.is_empty() || n_verts == 0 {
@@ -1290,27 +1290,27 @@ fn nurbs_curve2(e: &RawEntity, index: &Index) -> Result<NurbsCurve2, String> {
 /// n_u_vertices[4], n_v_vertices[5], rational[10], u_closed[11], v_closed[12],
 /// vertex_dim[14], vertices[15], u_knot_mult[16], v_knot_mult[17],
 /// u_knot[18], v_knot[19].
-fn nurbs_surface(e: &RawEntity, index: &Index) -> Result<NurbsSurface, String> {
+fn nurbs_surface(entities: &Entities, e: &RawEntity, index: &Index) -> Result<NurbsSurface, String> {
     if e.type_id != xt::NURBS_SURF {
         return Err(format!("expected NURBS_SURF, got type {}", e.type_id));
     }
-    let u_periodic = e.fields.get(0).map(|f| f.as_bool()).unwrap_or(false);
-    let v_periodic = e.fields.get(1).map(|f| f.as_bool()).unwrap_or(false);
-    let u_degree = int_at(e, 2);
-    let v_degree = int_at(e, 3);
-    let n_u = int_at(e, 4);
-    let n_v = int_at(e, 5);
-    let rational = e.fields.get(10).map(|f| f.as_bool()).unwrap_or(false);
-    let u_closed = e.fields.get(11).map(|f| f.as_bool()).unwrap_or(false);
-    let v_closed = e.fields.get(12).map(|f| f.as_bool()).unwrap_or(false);
-    let dim = int_at(e, 14);
+    let u_periodic = entities.fields(e).get(0).map(|f| f.as_bool()).unwrap_or(false);
+    let v_periodic = entities.fields(e).get(1).map(|f| f.as_bool()).unwrap_or(false);
+    let u_degree = int_at(entities, e, 2);
+    let v_degree = int_at(entities, e, 3);
+    let n_u = int_at(entities, e, 4);
+    let n_v = int_at(entities, e, 5);
+    let rational = entities.fields(e).get(10).map(|f| f.as_bool()).unwrap_or(false);
+    let u_closed = entities.fields(e).get(11).map(|f| f.as_bool()).unwrap_or(false);
+    let v_closed = entities.fields(e).get(12).map(|f| f.as_bool()).unwrap_or(false);
+    let dim = int_at(entities, e, 14);
 
     let raw = index
-        .get(&ptr(e, 15))
+        .get(&ptr(entities, e, 15))
         .map(|v| v.var_f64())
         .unwrap_or(&[]);
-    let u_knots = expanded_knots(e, 16, 18, index)?;
-    let v_knots = expanded_knots(e, 17, 19, index)?;
+    let u_knots = expanded_knots(entities, e, 16, 18, index)?;
+    let v_knots = expanded_knots(entities, e, 17, 19, index)?;
 
     let total = n_u * n_v;
     let (flat, flat_w) = split_poles(raw, total, dim, rational)?;
@@ -1386,18 +1386,18 @@ fn nurbs_surface(e: &RawEntity, index: &Index) -> Result<NurbsSurface, String> {
 }
 
 /// KNOT_MULT (i16 array) + KNOT_SET (f64 array) → the full knot vector.
-fn expanded_knots(
+fn expanded_knots(entities: &Entities, 
     e: &RawEntity,
     mult_field: usize,
     set_field: usize,
     index: &Index,
 ) -> Result<Vec<f64>, String> {
     let mults = index
-        .get(&ptr(e, mult_field))
+        .get(&ptr(entities, e, mult_field))
         .map(|m| m.var_i16())
         .unwrap_or(&[]);
     let knots = index
-        .get(&ptr(e, set_field))
+        .get(&ptr(entities, e, set_field))
         .map(|k| k.var_f64())
         .unwrap_or(&[]);
     if knots.is_empty() {

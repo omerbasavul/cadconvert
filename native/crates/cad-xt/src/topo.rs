@@ -31,7 +31,7 @@ use cad_ir::brep::{
 use cad_ir::eval::curve::recover_edge_range;
 use cad_ir::math::{Interval, Vec3};
 use rustc_hash::FxHashMap;
-use xt_parser::entity::RawEntity;
+use xt_parser::entity::{Entities, RawEntity};
 use xt_parser::schema as xt;
 
 /// A dropped sub-entity and why.
@@ -51,34 +51,35 @@ pub struct LoweredBody {
     pub skipped: Vec<Skip>,
 }
 
-fn ptr(e: &RawEntity, i: usize) -> usize {
-    e.fields.get(i).map(|f| f.as_ptr()).unwrap_or(0)
+fn ptr(entities: &Entities, e: &RawEntity, i: usize) -> usize {
+    entities.fields(e).get(i).map(|f| f.as_ptr()).unwrap_or(0)
 }
 
-fn chr(e: &RawEntity, i: usize) -> char {
-    e.fields.get(i).map(|f| f.as_char()).unwrap_or('+')
+fn chr(entities: &Entities, e: &RawEntity, i: usize) -> char {
+    entities.fields(e).get(i).map(|f| f.as_char()).unwrap_or('+')
 }
 
-fn f64_at(e: &RawEntity, i: usize) -> f64 {
-    e.fields.get(i).map(|f| f.as_f64()).unwrap_or(f64::NAN)
+fn f64_at(entities: &Entities, e: &RawEntity, i: usize) -> f64 {
+    entities.fields(e).get(i).map(|f| f.as_f64()).unwrap_or(f64::NAN)
 }
 
 /// Lower every BODY in the entity list.
-pub fn lower_bodies(entities: &[RawEntity], tolerance: f64) -> Vec<LoweredBody> {
+pub fn lower_bodies(entities: &Entities, tolerance: f64) -> Vec<LoweredBody> {
     let index: Index = entities.iter().map(|e| (e.index, e)).collect();
     entities
         .iter()
         .filter(|e| e.type_id == xt::BODY)
-        .map(|body| lower_body(body, &index, tolerance))
+        .map(|body| lower_body(entities, body, &index, tolerance))
         .collect()
 }
 
-fn lower_body(body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody {
+fn lower_body(entities: &Entities, body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody {
     BODY_NO.with(|b| b.set(b.get() + 1));
     if std::env::var_os("XT_EDGE_TRACE").is_some() || std::env::var_os("XT_WALK_TRACE").is_some() {
         eprintln!("[body] #{} handle={}", BODY_NO.with(|b| b.get()), body.index);
     }
     let mut b = Lowering {
+        entities,
         index,
         solid: Solid {
             tolerance: default_tol,
@@ -101,7 +102,7 @@ fn lower_body(body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody 
     // is what makes the 23-, 27-, 34- and 36-field BODY layouts all work.
     let mut shells: Vec<usize> = Vec::new();
     let mut body_type_candidates: Vec<u8> = Vec::new();
-    for f in &body.fields {
+    for f in entities.fields(body) {
         let p = f.as_ptr();
         if p != 0 {
             if let Some(t) = index.get(&p) {
@@ -116,11 +117,11 @@ fn lower_body(body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody 
                             if re.type_id != xt::REGION {
                                 break;
                             }
-                            let s = ptr(re, 5);
+                            let s = ptr(entities, re, 5);
                             if s != 0 && index.get(&s).is_some_and(|e| e.type_id == xt::SHELL) {
                                 shells.push(s);
                             }
-                            r = ptr(re, 3);
+                            r = ptr(entities, re, 3);
                         }
                     }
                     _ => {}
@@ -167,6 +168,9 @@ fn lower_body(body: &RawEntity, index: &Index, default_tol: f64) -> LoweredBody 
 
 struct Lowering<'a> {
     index: &'a Index<'a>,
+    /// Where the fields are. An entity holds a range into this rather than a
+    /// vector of its own; see [`xt_parser::entity::RawEntity::fields`].
+    entities: &'a Entities,
     solid: Solid,
     surfaces: FxHashMap<usize, SurfaceId>,
     curves: FxHashMap<usize, CurveId>,
@@ -206,14 +210,14 @@ impl<'a> Lowering<'a> {
             return;
         };
         // SHELL: [3]=next is unused here (bodies list their shells), [4]=face.
-        let mut face = ptr(se, 4);
+        let mut face = ptr(self.entities, se, 4);
         // A shell whose face pointer collides with a non-FACE entity: scan for
         // a face whose shell back-pointer ([6]) is this shell.
         if !self.index.get(&face).is_some_and(|e| e.type_id == xt::FACE) {
             face = self
                 .index
                 .values()
-                .find(|e| e.type_id == xt::FACE && ptr(e, 6) == shell)
+                .find(|e| e.type_id == xt::FACE && ptr(self.entities, e, 6) == shell)
                 .map(|e| e.index)
                 .unwrap_or(0);
         }
@@ -229,7 +233,7 @@ impl<'a> Lowering<'a> {
                 Ok(None) => {}
                 Err(reason) => self.skip(face, reason),
             }
-            face = ptr(fe, 3);
+            face = ptr(self.entities, fe, 3);
         }
 
         self.solid.shells.push(Shell {
@@ -241,7 +245,7 @@ impl<'a> Lowering<'a> {
 
     fn lower_face(&mut self, fe: &RawEntity) -> Result<Option<FaceId>, String> {
         // FACE: [2]=tolerance, [5]=loop, [7]=surface, [8]=sense.
-        let surface_ptr = ptr(fe, 7);
+        let surface_ptr = ptr(self.entities, fe, 7);
         if surface_ptr == 0 {
             return Err("face has no surface".into());
         }
@@ -258,16 +262,16 @@ impl<'a> Lowering<'a> {
         };
 
         // The face sense char composes with the surface's own sense char.
-        let face_reversed = matches!(chr(fe, 8), 'R' | '-');
+        let face_reversed = matches!(chr(self.entities, fe, 8), 'R' | '-');
         let geom_reversed = self
             .index
             .get(&surface_ptr)
-            .map(|se| geom::geom_sense(se) == '-')
+            .map(|se| geom::geom_sense(self.entities, se) == '-')
             .unwrap_or(false);
         let same_sense = !(face_reversed ^ geom_reversed);
 
         let mut bounds = Vec::new();
-        let mut lp = ptr(fe, 5);
+        let mut lp = ptr(self.entities, fe, 5);
         let mut seen = rustc_hash::FxHashSet::default();
         while lp != 0 && seen.insert(lp) {
             let Some(le) = self.index.get(&lp).filter(|e| e.type_id == xt::LOOP) else {
@@ -278,7 +282,7 @@ impl<'a> Lowering<'a> {
                 Ok(None) => {}
                 Err(reason) => self.skip(lp, reason),
             }
-            lp = ptr(le, 4);
+            lp = ptr(self.entities, le, 4);
         }
         if bounds.is_empty() {
             // A face that trims nothing is a real thing on a surface closed in
@@ -369,7 +373,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<Option<FaceId>, String> {
         // The loops lower normally — their edges lie on neighbouring surfaces.
         let mut bounds = Vec::new();
-        let mut lp = ptr(fe, 5);
+        let mut lp = ptr(self.entities, fe, 5);
         let mut seen = rustc_hash::FxHashSet::default();
         while lp != 0 && seen.insert(lp) {
             let Some(le) = self.index.get(&lp).filter(|e| e.type_id == xt::LOOP) else {
@@ -378,7 +382,7 @@ impl<'a> Lowering<'a> {
             if let Ok(Some(bound)) = self.lower_loop(le) {
                 bounds.push(bound);
             }
-            lp = ptr(le, 4);
+            lp = ptr(self.entities, le, 4);
         }
         if bounds.is_empty() {
             return Err(format!("{original}; boundary rebuild found no loops"));
@@ -540,13 +544,13 @@ impl<'a> Lowering<'a> {
             // And what happens when the ball is rolled along one: a track that
             // is found and still will not roll says the fault is in the roll,
             // not in the reading.
-            if let Some(be) = self.index.get(&ptr(fe, 7)) {
-                let radius = f64_at(be, 11).abs();
+            if let Some(be) = self.index.get(&ptr(self.entities, fe, 7)) {
+                let radius = f64_at(self.entities, be, 11).abs();
                 let tol = (radius * 0.01).max(self.solid.tolerance * 20.0);
-                let mates: Vec<cad_ir::brep::Surface> = [ptr(be, 8), ptr(be, 9)]
+                let mates: Vec<cad_ir::brep::Surface> = [ptr(self.entities, be, 8), ptr(self.entities, be, 9)]
                     .iter()
                     .filter_map(|q| self.index.get(q))
-                    .filter_map(|e| geom::surface(e, self.index).ok())
+                    .filter_map(|e| geom::surface(self.entities, e, self.index).ok())
                     .collect();
                 for (which, rail) in &t {
                     if mates.len() < 2 {
@@ -628,10 +632,10 @@ impl<'a> Lowering<'a> {
         if rolled.is_none()
             && std::env::var_os("XT_BLEND_DUMP").is_some()
             && DUMPED_ONE.with(|d| !d.get())
-            && let Some(be) = self.index.get(&ptr(fe, 7))
+            && let Some(be) = self.index.get(&ptr(self.entities, fe, 7))
         {
-            let mates = [ptr(be, 8), ptr(be, 9)].map(|q| {
-                self.index.get(&q).and_then(|e| geom::surface(e, self.index).ok())
+            let mates = [ptr(self.entities, be, 8), ptr(self.entities, be, 9)].map(|q| {
+                self.index.get(&q).and_then(|e| geom::surface(self.entities, e, self.index).ok())
             });
             let sides = split_at_corners(&ring, corners);
             let lies_on = |side: &[Vec3], m: &Option<cad_ir::brep::Surface>| match m {
@@ -650,7 +654,7 @@ impl<'a> Lowering<'a> {
             };
             eprintln!(
                 "[dump] a refused face: radius {:.5}, ring {} points, mates {} and {}",
-                f64_at(be, 11).abs(),
+                f64_at(self.entities, be, 11).abs(),
                 ring.len(),
                 mates[0].as_ref().map(surface_name).unwrap_or("none"),
                 mates[1].as_ref().map(surface_name).unwrap_or("none"),
@@ -689,7 +693,7 @@ impl<'a> Lowering<'a> {
                 };
                 eprintln!("[standoff] points on mate A, distance to mate B: {}", stats(&mut on_a));
                 eprintln!("[standoff] points on mate B, distance to mate A: {}", stats(&mut on_b));
-                let r = f64_at(be, 11).abs();
+                let r = f64_at(self.entities, be, 11).abs();
                 eprintln!("[standoff] record radius {r:.5}; a fixed-radius roll would give one standoff for all of each");
             }
             // And as geometry, to be looked at: the ring, a sample of each
@@ -866,8 +870,8 @@ impl<'a> Lowering<'a> {
         ARCED_HERE.with(|c| c.set(from_arc));
         let rolled = rolled.or(arced);
         if std::env::var_os("XT_BLEND_PROBE").is_some() {
-            let t = self.index.get(&ptr(fe, 7)).map(|e| e.type_id).unwrap_or(0);
-            let r = self.index.get(&ptr(fe, 7)).map(|e| f64_at(e, 11)).unwrap_or(0.0);
+            let t = self.index.get(&ptr(self.entities, fe, 7)).map(|e| e.type_id).unwrap_or(0);
+            let r = self.index.get(&ptr(self.entities, fe, 7)).map(|e| f64_at(self.entities, e, 11)).unwrap_or(0.0);
             // Two very different reasons to end up on the interpolation: a
             // grid was built and did not carry the face, or no ball ever
             // stayed on both surfaces long enough to build one.
@@ -880,10 +884,10 @@ impl<'a> Lowering<'a> {
             };
             eprintln!("[blend] {why} type={t} loops={} ring={} radius={r:.5} face={} entity={}", bounds.len() + 1, ring.len(), self.solid.faces.len(), fe.index);
             if std::env::var_os("XT_BLEND_FIELDS").is_some()
-                && let Some(be) = self.index.get(&ptr(fe, 7))
+                && let Some(be) = self.index.get(&ptr(self.entities, fe, 7))
             {
                 let fields: Vec<String> =
-                    be.fields.iter().map(|f| format!("{f:?}")).collect();
+                    self.entities.fields(be).iter().map(|f| format!("{f:?}")).collect();
                 eprintln!("[fields] {why} {}", fields.join(" "));
             }
         }
@@ -891,7 +895,7 @@ impl<'a> Lowering<'a> {
             eprintln!("[arc] kept as the face's surface");
         }
 
-        let blend = ptr(fe, 7);
+        let blend = ptr(self.entities, fe, 7);
         match rolled {
             Some(grid) => {
                 let spare = coons();
@@ -906,13 +910,13 @@ impl<'a> Lowering<'a> {
             }
             None => {
                 if std::env::var_os("XT_STANDOFF_PROBE").is_some()
-                    && let Some(be) = self.index.get(&ptr(fe, 7))
+                    && let Some(be) = self.index.get(&ptr(self.entities, fe, 7))
                 {
-                    let r = f64_at(be, 11).abs();
-                    let mates: Vec<cad_ir::brep::Surface> = [ptr(be, 8), ptr(be, 9)]
+                    let r = f64_at(self.entities, be, 11).abs();
+                    let mates: Vec<cad_ir::brep::Surface> = [ptr(self.entities, be, 8), ptr(self.entities, be, 9)]
                         .iter()
                         .filter_map(|q| self.index.get(q))
-                        .filter_map(|e| geom::surface(e, self.index).ok())
+                        .filter_map(|e| geom::surface(self.entities, e, self.index).ok())
                         .collect();
                     if let [a, b] = mates.as_slice() {
                         let dist = |surf: &cad_ir::brep::Surface, q: Vec3| {
@@ -1028,19 +1032,19 @@ impl<'a> Lowering<'a> {
     /// on neither is a cross-section end, which is what separates the runs.
     #[allow(dead_code, reason = "kept with its measurement; see the note above")]
     fn contact_tracks(&self, fe: &RawEntity, ring: &[Vec3]) -> Vec<(usize, Vec<Vec3>)> {
-        let Some(be) = self.index.get(&ptr(fe, 7)) else { return Vec::new() };
+        let Some(be) = self.index.get(&ptr(self.entities, fe, 7)) else { return Vec::new() };
         if be.type_id != xt::BLENDED_EDGE {
             return Vec::new();
         }
-        let radius = f64_at(be, 11).abs();
+        let radius = f64_at(self.entities, be, 11).abs();
         if !(radius.is_finite() && radius > 0.0) {
             return Vec::new();
         }
         let tolerance = (radius * 0.01).max(self.solid.tolerance * 20.0);
-        let mates: Vec<cad_ir::brep::Surface> = [ptr(be, 8), ptr(be, 9)]
+        let mates: Vec<cad_ir::brep::Surface> = [ptr(self.entities, be, 8), ptr(self.entities, be, 9)]
             .iter()
             .filter_map(|q| self.index.get(q))
-            .filter_map(|e| geom::surface(e, self.index).ok())
+            .filter_map(|e| geom::surface(self.entities, e, self.index).ok())
             .collect();
         let mut out = Vec::new();
         for (which, surf) in mates.iter().enumerate() {
@@ -1097,11 +1101,11 @@ impl<'a> Lowering<'a> {
         n: usize,
         flip: bool,
     ) -> Option<Vec<Vec<Vec3>>> {
-        let be = self.index.get(&ptr(fe, 7))?;
-        if be.type_id != xt::BLENDED_EDGE || chr(be, 7) != 'R' {
+        let be = self.index.get(&ptr(self.entities, fe, 7))?;
+        if be.type_id != xt::BLENDED_EDGE || chr(self.entities, be, 7) != 'R' {
             return None;
         }
-        let r = f64_at(be, 11).abs();
+        let r = f64_at(self.entities, be, 11).abs();
         if !(r.is_finite() && r > 0.0) {
             return None;
         }
@@ -1412,26 +1416,26 @@ impl<'a> Lowering<'a> {
                 eprintln!("[roll] {why}");
             }
         };
-        let be = self.index.get(&ptr(fe, 7))?;
+        let be = self.index.get(&ptr(self.entities, fe, 7))?;
         if be.type_id != xt::BLENDED_EDGE {
             note("the face's surface is not a blend");
             return None;
         }
-        if chr(be, 7) != 'R' {
-            note(&format!("the blend is type {:?}, not a rolling ball", chr(be, 7)));
+        if chr(self.entities, be, 7) != 'R' {
+            note(&format!("the blend is type {:?}, not a rolling ball", chr(self.entities, be, 7)));
             return None;
         }
         // BLENDED_EDGE: [8],[9] the mating surfaces, [11] the radius.
-        let radius = f64_at(be, 11).abs();
+        let radius = f64_at(self.entities, be, 11).abs();
         if !(radius.is_finite() && radius > 0.0) {
             note("the blend states no radius");
             return None;
         }
-        let Some(ea) = self.index.get(&ptr(be, 8)) else {
+        let Some(ea) = self.index.get(&ptr(self.entities, be, 8)) else {
             note("the blend names no first surface");
             return None;
         };
-        let Some(eb) = self.index.get(&ptr(be, 9)) else {
+        let Some(eb) = self.index.get(&ptr(self.entities, be, 9)) else {
             note("the blend names no second surface");
             return None;
         };
@@ -1444,14 +1448,14 @@ impl<'a> Lowering<'a> {
         // lowering goes from 7.4 to 15.7 seconds. What actually turns these
         // faces away is the roll itself — 2,610 of the attempts end with the
         // ball unable to stay on both surfaces along the rail.
-        let a = match geom::surface(ea, self.index) {
+        let a = match geom::surface(self.entities, ea, self.index) {
             Ok(s) => s,
             Err(why) => {
                 note(&format!("the first mating surface: {why}"));
                 return None;
             }
         };
-        let b = match geom::surface(eb, self.index) {
+        let b = match geom::surface(self.entities, eb, self.index) {
             Ok(s) => s,
             Err(why) => {
                 note(&format!("the second mating surface: {why}"));
@@ -1916,7 +1920,7 @@ impl<'a> Lowering<'a> {
     /// LOOP [2] points into the fin cycle; fins link via their forward
     /// pointer and each carries the vertex the loop enters its edge at.
     fn lower_loop(&mut self, le: &RawEntity) -> Result<Option<Bound>, String> {
-        let first = ptr(le, 2);
+        let first = ptr(self.entities, le, 2);
         if first == 0 {
             return Ok(None);
         }
@@ -1930,18 +1934,18 @@ impl<'a> Lowering<'a> {
             let Some(fe) = self.index.get(&fin).filter(|e| e.type_id == xt::FIN) else {
                 break;
             };
-            let a = usize::from(fe.fields.len() < 10);
+            let a = usize::from(self.entities.fields(fe).len() < 10);
             // A fin names the loop it belongs to. Following the forward
             // pointer without checking it walks straight out of this loop and
             // through the rest of the face — one plane in the Solid Edge
             // assembly collected 163 half-edges that way, and its holes and
             // outer profile fused into a single polygon whose triangulation
             // agreed with nothing around it.
-            if ptr(fe, 1 - a) != le.index {
+            if ptr(self.entities, fe, 1 - a) != le.index {
                 break;
             }
             cycle.push(fe);
-            fin = ptr(fe, 2 - a);
+            fin = ptr(self.entities, fe, 2 - a);
         }
         if cycle.is_empty() {
             return Ok(None);
@@ -1951,20 +1955,20 @@ impl<'a> Lowering<'a> {
         let starts: Vec<usize> = cycle
             .iter()
             .map(|fe| {
-                let a = usize::from(fe.fields.len() < 10);
-                self.vertex_position_handle(ptr(fe, 4 - a))
+                let a = usize::from(self.entities.fields(fe).len() < 10);
+                self.vertex_position_handle(ptr(self.entities, fe, 4 - a))
             })
             .collect();
 
         let mut halves = Vec::with_capacity(cycle.len());
         for (i, fe) in cycle.iter().enumerate() {
-            let a = usize::from(fe.fields.len() < 10);
-            let edge_ptr = ptr(fe, 6 - a);
-            let sense = chr(fe, 9 - a);
-            let pcurve_ptr = ptr(fe, 7 - a);
+            let a = usize::from(self.entities.fields(fe).len() < 10);
+            let edge_ptr = ptr(self.entities, fe, 6 - a);
+            let sense = chr(self.entities, fe, 9 - a);
+            let pcurve_ptr = ptr(self.entities, fe, 7 - a);
             if edge_ptr == 0 {
                 self.skip(
-                    ptr(fe, 0),
+                    ptr(self.entities, fe, 0),
                     "fin names no edge; the loop it belongs to is left open here",
                 );
                 continue;
@@ -1982,7 +1986,7 @@ impl<'a> Lowering<'a> {
                     let pcurve = self
                         .index
                         .get(&pcurve_ptr)
-                        .and_then(|pe| geom::pcurve_of(pe, self.index));
+                        .and_then(|pe| geom::pcurve_of(self.entities, pe, self.index));
                     halves.push(HalfEdge {
                         edge,
                         forward: forward ^ built_reversed,
@@ -1995,7 +1999,7 @@ impl<'a> Lowering<'a> {
         if std::env::var_os("XT_LOOP_TRACE").is_some() {
             let senses: String = cycle
                 .iter()
-                .map(|fe| chr(fe, 9 - usize::from(fe.fields.len() < 10)))
+                .map(|fe| chr(self.entities, fe, 9 - usize::from(self.entities.fields(fe).len() < 10)))
                 .collect();
             let dirs: String = halves
                 .iter()
@@ -2031,15 +2035,15 @@ impl<'a> Lowering<'a> {
             let edges: String = cycle
                 .iter()
                 .map(|fe| {
-                    let a = usize::from(fe.fields.len() < 10);
-                    let ep = ptr(fe, 6 - a);
-                    let cp = self.index.get(&ep).map(|ee| ptr(ee, 6)).unwrap_or(0);
+                    let a = usize::from(self.entities.fields(fe).len() < 10);
+                    let ep = ptr(self.entities, fe, 6 - a);
+                    let cp = self.index.get(&ep).map(|ee| ptr(self.entities, ee, 6)).unwrap_or(0);
                     let raw = self
                         .index
                         .get(&cp)
                         .map(|ce| {
                             let f: Vec<String> =
-                                ce.fields.iter().map(|v| format!("{v:?}")).collect();
+                                self.entities.fields(ce).iter().map(|v| format!("{v:?}")).collect();
                             format!("type={} {}", ce.type_id, f.join(" "))
                         })
                         .unwrap_or_default();
@@ -2078,8 +2082,8 @@ impl<'a> Lowering<'a> {
 
     fn vertex_point(&self, vertex: usize) -> Option<Vec3> {
         let ve = self.index.get(&vertex)?;
-        let pe = self.index.get(&ptr(ve, 5))?;
-        let a = pe.fields.get(5).map(|f| f.as_vec3())?;
+        let pe = self.index.get(&ptr(self.entities, ve, 5))?;
+        let a = self.entities.fields(pe).get(5).map(|f| f.as_vec3())?;
         Some(Vec3::new(a[0], a[1], a[2]))
     }
 
@@ -2120,7 +2124,7 @@ impl<'a> Lowering<'a> {
         // EDGE: [2]=tolerance, [6]=curve. A tolerant edge has no 3D curve at
         // all — its geometry lives in each fin's SP_CURVE — so the fin's
         // parameter-space curve, sampled through its face's surface, stands in.
-        let curve_ptr = ptr(ee, 6);
+        let curve_ptr = ptr(self.entities, ee, 6);
         let tolerant_ok = std::env::var_os("XT_NO_TOLERANT").is_none();
         let mut route = if curve_ptr != 0 { "own-curve" } else { "stand-in" };
         let mut curve_id = if curve_ptr != 0 {
@@ -2197,7 +2201,7 @@ impl<'a> Lowering<'a> {
                 std::mem::discriminant(curve)
             );
         }
-        let tol = f64_at(ee, 2);
+        let tol = f64_at(self.entities, ee, 2);
         let tolerance = if tol.is_finite() && tol > 0.0 {
             tol
         } else {
@@ -2231,7 +2235,7 @@ impl<'a> Lowering<'a> {
                 let along = self
                     .index
                     .get(&curve_ptr)
-                    .map(|ce| geom::geom_sense(ce) != '-')
+                    .map(|ce| geom::geom_sense(self.entities, ce) != '-')
                     .unwrap_or(true);
                 recover_edge_range(curve, p0, p1, along, tolerance)
             }
@@ -2356,7 +2360,7 @@ impl<'a> Lowering<'a> {
             && self
                 .index
                 .get(&curve_ptr)
-                .map(|ce| geom::geom_sense(ce) == '-')
+                .map(|ce| geom::geom_sense(self.entities, ce) == '-')
                 .unwrap_or(false);
         if curve_reversed && std::env::var_os("XT_CLOSED_TRACE").is_some() {
             eprintln!("[closed] edge {edge_ptr}: its curve's own sense is '-', so the edge runs against it");
@@ -2397,7 +2401,7 @@ impl<'a> Lowering<'a> {
                 "[edge] index={} site=A curve={curve_ptr} type={} base_type={}",
                 self.solid.edges.len(),
                 ce.map(|e| e.type_id).unwrap_or(0),
-                ce.filter(|e| e.type_id == xt::TRIMMED_CURVE).and_then(|e| self.index.get(&ptr(e, 5))).map(|b| b.type_id).unwrap_or(0),
+                ce.filter(|e| e.type_id == xt::TRIMMED_CURVE).and_then(|e| self.index.get(&ptr(self.entities, e, 5))).map(|b| b.type_id).unwrap_or(0),
             );
         }
         if std::env::var_os("XT_EDGE_TRACE").is_some() {
@@ -2419,7 +2423,7 @@ impl<'a> Lowering<'a> {
                 _ => String::from("-"),
             };
             let ctype = self.index.get(&curve_ptr).map(|e| e.type_id).unwrap_or(0);
-            let raw_ptr = self.index.get(&edge_ptr).map(|ee| ptr(ee, 6)).unwrap_or(usize::MAX);
+            let raw_ptr = self.index.get(&edge_ptr).map(|ee| ptr(self.entities, ee, 6)).unwrap_or(usize::MAX);
             let (q0, q1) = match c { Curve::Polyline { points } if points.len() >= 2 => (points[0], points[points.len()-1]), _ => (Vec3::ZERO, Vec3::ZERO) };
             eprintln!("[edge] body#{} index={} site=B curve_id={} {kind} {pts} pts span={span:.5} route={route} entity={curve_ptr} type={ctype} raw_edge_curve={raw_ptr} fin_pcurve={fin_pcurve} ends-miss={ends} poly=[{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}] verts=[{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}]", BODY_NO.with(|b| b.get()), self.solid.edges.len(), curve_id.0, q0.x,q0.y,q0.z,q1.x,q1.y,q1.z, p0.x,p0.y,p0.z,p1.x,p1.y,p1.z);
         }
@@ -2454,18 +2458,18 @@ impl<'a> Lowering<'a> {
             return out;
         };
         // EDGE [3] = one of its fins; FIN [5 - a] = the partner across it.
-        let mut fin = ptr(ee, 3);
+        let mut fin = ptr(self.entities, ee, 3);
         let mut seen = rustc_hash::FxHashSet::default();
         while fin != 0 && seen.insert(fin) {
             let Some(fe) = self.index.get(&fin).filter(|e| e.type_id == xt::FIN) else {
                 break;
             };
-            let a = usize::from(fe.fields.len() < 10);
-            let pc = ptr(fe, 7 - a);
+            let a = usize::from(self.entities.fields(fe).len() < 10);
+            let pc = ptr(self.entities, fe, 7 - a);
             if pc != 0 && !out.contains(&pc) {
                 out.push(pc);
             }
-            fin = ptr(fe, 5 - a);
+            fin = ptr(self.entities, fe, 5 - a);
         }
         out
     }
@@ -2475,7 +2479,7 @@ impl<'a> Lowering<'a> {
         if let Some(hit) = self.blend_surfaces.borrow().get(&e.index) {
             return hit.clone();
         }
-        let built = geom::surface_for_curve(e, self.index).ok();
+        let built = geom::surface_for_curve(self.entities, e, self.index).ok();
         self.blend_surfaces.borrow_mut().insert(e.index, built.clone());
         built
     }
@@ -2499,7 +2503,7 @@ impl<'a> Lowering<'a> {
     ) -> Option<Curve> {
         let ce = self.index.get(&curve_ptr)?;
         let ie = if ce.type_id == xt::TRIMMED_CURVE {
-            self.index.get(&ptr(ce, 7))?
+            self.index.get(&ptr(self.entities, ce, 7))?
         } else {
             ce
         };
@@ -2515,8 +2519,8 @@ impl<'a> Lowering<'a> {
                 { if std::env::var_os("XT_WALK_TRACE").is_some() { eprintln!("[walk] body#{} curve {curve_ptr} refused at guard 3", BODY_NO.with(|b| b.get())); } return None; }
             }};
         }
-        let Some(first) = self.index.get(&ptr(ie, 7)) else { give_up!("no first surface") };
-        let Some(second) = self.index.get(&ie.extra.first().map(|f| f.as_ptr()).unwrap_or(0)) else {
+        let Some(first) = self.index.get(&ptr(self.entities, ie, 7)) else { give_up!("no first surface") };
+        let Some(second) = self.index.get(&self.entities.extra(ie).first().map(|f| f.as_ptr()).unwrap_or(0)) else {
             give_up!("no second surface")
         };
         // A blend boundary among the two is not a transversal meeting at all:
@@ -2578,8 +2582,8 @@ impl<'a> Lowering<'a> {
         // it states how coarse: a walk that strays further from it than that
         // is on the other branch and is refused.
         let slack = {
-            let chart = self.index.get(&ptr(ie, 8)).filter(|c| c.type_id == xt::CHART);
-            let stated = chart.map(|c| f64_at(c, 3).abs()).unwrap_or(0.0);
+            let chart = self.index.get(&ptr(self.entities, ie, 8)).filter(|c| c.type_id == xt::CHART);
+            let stated = chart.map(|c| f64_at(self.entities, c, 3).abs()).unwrap_or(0.0);
             stated.max(widest) + tolerance
         };
         let near_chart = |q: Vec3| {
@@ -2746,23 +2750,23 @@ impl<'a> Lowering<'a> {
             }};
         }
         let ee = self.index.get(&edge_ptr)?;
-        let Some((be, across, far_side)) = std::iter::once(ptr(ee, 6))
+        let Some((be, across, far_side)) = std::iter::once(ptr(self.entities, ee, 6))
             .chain(self.pcurves_of(edge_ptr, 0))
             .filter(|p| *p != 0)
-            .find_map(|p| geom::blend_parameter_curve(self.index.get(&p)?, self.index))
+            .find_map(|p| geom::blend_parameter_curve(self.entities, self.index.get(&p)?, self.index))
         else {
             bail!("no description is a blend parameter curve")
         };
-        if chr(be, 7) != 'R' {
-            bail!(format!("blend_type {:?}", chr(be, 7)))
+        if chr(self.entities, be, 7) != 'R' {
+            bail!(format!("blend_type {:?}", chr(self.entities, be, 7)))
         }
-        let radius = f64_at(be, 11).abs();
+        let radius = f64_at(self.entities, be, 11).abs();
         if !(radius.is_finite() && radius > 0.0) {
             return None;
         }
         let mate = |i: usize| -> Option<cad_ir::brep::Surface> {
-            let e = self.index.get(&ptr(be, i))?;
-            match geom::surface(e, self.index) {
+            let e = self.index.get(&ptr(self.entities, be, i))?;
+            match geom::surface(self.entities, e, self.index) {
                 Ok(s) => Some(s),
                 Err(_) => {
                     if probe {
@@ -2853,7 +2857,7 @@ impl<'a> Lowering<'a> {
         if std::env::var_os("XT_EDGE_TRACE").is_some() {
             eprintln!("[tolerant] edge {edge_ptr} pcurve {fin_pcurve} type {}", pe.type_id);
         }
-        let curve = geom::sp_curve_polyline(pe, self.index)?;
+        let curve = geom::sp_curve_polyline(self.entities, pe, self.index)?;
         if std::env::var_os("XT_CURVE_TRACE").is_some()
             && let Curve::Polyline { points } = &curve
             && points.iter().any(|p| p.length() > 100.0)
@@ -2876,7 +2880,7 @@ impl<'a> Lowering<'a> {
         let Some(se) = self.index.get(&handle) else {
             return Err(format!("surface {handle} does not exist"));
         };
-        let surface = geom::surface(se, self.index)?;
+        let surface = geom::surface(self.entities, se, self.index)?;
         // An SP_CURVE inside this surface references it by XT handle; the
         // lowering rewrites those after interning, so nothing to fix here for
         // surfaces themselves.
@@ -2898,7 +2902,7 @@ impl<'a> Lowering<'a> {
         let Some(ce) = self.index.get(&handle) else {
             return Err(format!("curve {handle} does not exist"));
         };
-        let mut curve = geom::curve(ce, self.index)?;
+        let mut curve = geom::curve(self.entities, ce, self.index)?;
         if std::env::var_os("XT_CURVE_TRACE").is_some()
             && let Curve::Polyline { points } = &curve
             && points.iter().any(|p| p.length() > 100.0)

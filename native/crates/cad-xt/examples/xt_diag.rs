@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("-- EDGE[6] (curve) target types --");
     let mut targets: BTreeMap<String, usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 16) {
-        let p = e.fields.get(6).map(|f| f.as_ptr()).unwrap_or(0);
+        let p = file.entities.fields(e).get(6).map(|f| f.as_ptr()).unwrap_or(0);
         let key = match (p, type_of(p)) {
             (0, _) => "null".into(),
             (_, Some(t)) => format!("type {t}"),
@@ -37,14 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|e| {
             e.type_id == 16 && {
-                let p = e.fields.get(6).map(|f| f.as_ptr()).unwrap_or(0);
+                let p = file.entities.fields(e).get(6).map(|f| f.as_ptr()).unwrap_or(0);
                 p != 0 && type_of(p).is_none()
             }
         })
         .take(3)
     {
         print!("  edge #{}: ", e.index);
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             let p = f.as_ptr();
             let t = type_of(p).map(|t| format!("→{t}")).unwrap_or_default();
             print!("[{i}]={p}{t} ");
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- GEOMETRIC_OWNER (141) samples --");
     for e in file.entities.iter().filter(|e| e.type_id == 141).take(3) {
         print!("  #{}: ", e.index);
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             let p = f.as_ptr();
             let t = type_of(p).map(|t| format!("→{t}")).unwrap_or_default();
             print!("[{i}]={p}{t} ");
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- CHART (40) shape --");
     let mut lens: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 40) {
-        *lens.entry((e.fields.len(), e.var_f64().len().min(50) / 10 * 10)).or_default() += 1;
+        *lens.entry((file.entities.fields(e).len(), e.var_f64().len().min(50) / 10 * 10)).or_default() += 1;
     }
     for ((nf, nv), n) in lens.iter().take(8) {
         println!("  {n:>6}  fixed={nf} var_f64≈{nv}");
@@ -77,12 +77,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "  sample #{}: fields={} var_f64.len={} first 8: {:?}",
             e.index,
-            e.fields.len(),
+            file.entities.fields(e).len(),
             e.var_f64().len(),
             &e.var_f64()[..e.var_f64().len().min(8)]
         );
         print!("  fixed: ");
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             print!("[{i}]={f:?} ");
         }
         println!();
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- NURBS_SURF flags --");
     let mut flags: BTreeMap<(bool, bool, bool, bool), usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 126) {
-        let b = |i: usize| e.fields.get(i).map(|f| f.as_bool()).unwrap_or(false);
+        let b = |i: usize| file.entities.fields(e).get(i).map(|f| f.as_bool()).unwrap_or(false);
         *flags.entry((b(0), b(1), b(11), b(12))).or_default() += 1;
     }
     for ((up, vp, uc, vc), n) in &flags {
@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- FACE[7] surface types --");
     let mut st: BTreeMap<u16, usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 14) {
-        let p = e.fields.get(7).map(|f| f.as_ptr()).unwrap_or(0);
+        let p = file.entities.fields(e).get(7).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(t) = type_of(p) {
             *st.entry(t).or_default() += 1;
         }
@@ -116,13 +116,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- FIN pcurve field target types (only fins whose edge has a null curve) --");
     let mut pt: BTreeMap<String, usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 17) {
-        let a = if e.fields.len() < 10 { 1 } else { 0 };
-        let edge = e.fields.get(6 - a).map(|f| f.as_ptr()).unwrap_or(0);
+        let a = if file.entities.fields(e).len() < 10 { 1 } else { 0 };
+        let edge = file.entities.fields(e).get(6 - a).map(|f| f.as_ptr()).unwrap_or(0);
         let Some(ee) = index.get(&edge) else { continue };
-        if ee.fields.get(6).map(|f| f.as_ptr()).unwrap_or(0) != 0 {
+        if file.entities.fields(ee).get(6).map(|f| f.as_ptr()).unwrap_or(0) != 0 {
             continue;
         }
-        let p = e.fields.get(7 - a).map(|f| f.as_ptr()).unwrap_or(0);
+        let p = file.entities.fields(e).get(7 - a).map(|f| f.as_ptr()).unwrap_or(0);
         let key = match (p, type_of(p)) {
             (0, _) => "null".into(),
             (_, Some(t)) => format!("type {t}"),
@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n-- TRIMMED_CURVE (133) samples --");
     for e in file.entities.iter().filter(|e| e.type_id == 133).take(4) {
         print!("  #{}: ", e.index);
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             match f {
                 xt_parser::entity::FieldVal::Vec3(v) => {
                     print!("[{i}]=v({:.4},{:.4},{:.4}) ", v[0], v[1], v[2])
@@ -155,10 +155,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Range degeneracy per basis type: how many trimmed curves have t0==t1?
     let mut degen: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 133) {
-        let basis = e.fields.get(7).map(|f| f.as_ptr()).unwrap_or(0);
+        let basis = file.entities.fields(e).get(7).map(|f| f.as_ptr()).unwrap_or(0);
         let bt = type_of(basis).map(|t| t.to_string()).unwrap_or("?".into());
-        let t0 = e.fields.get(10).map(|f| f.as_f64()).unwrap_or(f64::NAN);
-        let t1 = e.fields.get(11).map(|f| f.as_f64()).unwrap_or(f64::NAN);
+        let t0 = file.entities.fields(e).get(10).map(|f| f.as_f64()).unwrap_or(f64::NAN);
+        let t1 = file.entities.fields(e).get(11).map(|f| f.as_f64()).unwrap_or(f64::NAN);
         let slot = degen.entry(bt).or_default();
         slot.1 += 1;
         if !(t1 - t0).abs().is_finite() || (t1 - t0).abs() < 1e-12 {
@@ -175,35 +175,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let h: usize = target.parse().unwrap();
         if let Some(ee) = index.get(&h) {
             println!("\n-- edge #{h} --");
-            for (i, f) in ee.fields.iter().enumerate() {
+            for (i, f) in file.entities.fields(ee).iter().enumerate() {
                 let p = f.as_ptr();
                 let t = type_of(p).map(|t| format!("→{t}")).unwrap_or_default();
                 println!("  [{i}]={f:?}{t}");
             }
             // fins referencing this edge
             for fin in file.entities.iter().filter(|e| e.type_id == 17) {
-                let a = if fin.fields.len() < 10 { 1 } else { 0 };
-                if fin.fields.get(6 - a).map(|f| f.as_ptr()).unwrap_or(0) != h {
+                let a = if file.entities.fields(fin).len() < 10 { 1 } else { 0 };
+                if file.entities.fields(fin).get(6 - a).map(|f| f.as_ptr()).unwrap_or(0) != h {
                     continue;
                 }
-                let vx = fin.fields.get(4 - a).map(|f| f.as_ptr()).unwrap_or(0);
-                let sense = fin.fields.get(9 - a).map(|f| f.as_char()).unwrap_or('?');
+                let vx = file.entities.fields(fin).get(4 - a).map(|f| f.as_ptr()).unwrap_or(0);
+                let sense = file.entities.fields(fin).get(9 - a).map(|f| f.as_char()).unwrap_or('?');
                 let pos = index
                     .get(&vx)
-                    .and_then(|ve| ve.fields.get(5).map(|f| f.as_ptr()))
+                    .and_then(|ve| file.entities.fields(ve).get(5).map(|f| f.as_ptr()))
                     .and_then(|pp| index.get(&pp))
-                    .and_then(|pe| pe.fields.get(5).map(|f| f.as_vec3()));
+                    .and_then(|pe| file.entities.fields(pe).get(5).map(|f| f.as_vec3()));
                 println!(
                     "  fin #{} sense={sense} vertex #{vx} pos={pos:?} fwd→{}",
                     fin.index,
-                    fin.fields.get(2 - a).map(|f| f.as_ptr()).unwrap_or(0)
+                    file.entities.fields(fin).get(2 - a).map(|f| f.as_ptr()).unwrap_or(0)
                 );
             }
             // the curve
-            let c = ee.fields.get(6).map(|f| f.as_ptr()).unwrap_or(0);
+            let c = file.entities.fields(ee).get(6).map(|f| f.as_ptr()).unwrap_or(0);
             if let Some(ce) = index.get(&c) {
                 println!("  curve #{c} type {}:", ce.type_id);
-                for (i, f) in ce.fields.iter().enumerate() {
+                for (i, f) in file.entities.fields(ce).iter().enumerate() {
                     println!("    [{i}]={f:?}");
                 }
             }
@@ -218,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for e in file.entities.iter().filter(|e| e.type_id == 11).take(3) {
         print!("  INSTANCE #{}: ", e.index);
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             let p = f.as_ptr();
             let t = type_of(p).map(|t| format!("→{t}")).unwrap_or_default();
             print!("[{i}]={p}{t} ");
@@ -229,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for t in [126u16, 136] {
         if let Some(e) = file.entities.iter().find(|e| e.type_id == t) {
             println!("\n-- raw type {t} #{} --", e.index);
-            for (i, f) in e.fields.iter().enumerate() {
+            for (i, f) in file.entities.fields(e).iter().enumerate() {
                 let pt = f.as_ptr();
                 let tt = type_of(pt).map(|t| format!("→{t}")).unwrap_or_default();
                 println!("  [{i}]={f:?}{tt}");
@@ -240,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6c. Raw TRANSFORM (100) dumps.
     for e in file.entities.iter().filter(|e| e.type_id == 100).take(3) {
         println!("\n-- raw TRANSFORM #{} --", e.index);
-        for (i, f) in e.fields.iter().enumerate() {
+        for (i, f) in file.entities.fields(e).iter().enumerate() {
             println!("  [{i}]={f:?}");
         }
     }
@@ -252,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .filter(|e| e.type_id == 100)
             .map(|e| {
-                let v = e.fields.get(5).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
+                let v = file.entities.fields(e).get(5).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
                 (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
             })
             .collect();
@@ -266,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Rotation orthonormality check: row lengths of each matrix.
         let mut worst = 0.0f64;
         for e in file.entities.iter().filter(|e| e.type_id == 100) {
-            if let Some(m) = e.fields.get(4).and_then(|f| f.as_mat3()) {
+            if let Some(m) = file.entities.fields(e).get(4).and_then(|f| f.as_mat3()) {
                 for r in 0..3 {
                     let len = (m[r * 3] * m[r * 3]
                         + m[r * 3 + 1] * m[r * 3 + 1]
@@ -283,13 +283,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut shown = 0;
         for e in file.entities.iter().filter(|e| e.type_id == 40) {
-            let fixed = e.fields.get(6).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
+            let fixed = file.entities.fields(e).get(6).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
             let far_fixed = fixed.iter().any(|v| v.abs() > 100.0);
             let far_var = e.var_f64().iter().any(|v| v.abs() > 100.0);
             if (far_fixed || far_var) && shown < 3 {
                 shown += 1;
                 println!("\n-- far CHART #{} fixed[6]={fixed:?} --", e.index);
-                for (i, f) in e.fields.iter().enumerate() {
+                for (i, f) in file.entities.fields(e).iter().enumerate() {
                     println!("  [{i}]={f:?}");
                 }
                 println!("  var_f64[{}] first 12: {:?}", e.var_f64().len(),
@@ -308,23 +308,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..4 {
             let Some(e) = index.get(&cur) else { break };
             println!("\n-- chain #{} type {} --", cur, e.type_id);
-            for (i, f) in e.fields.iter().enumerate() {
+            for (i, f) in file.entities.fields(e).iter().enumerate() {
                 let pt = f.as_ptr();
                 let tt = type_of(pt).map(|t| format!("→{t}")).unwrap_or_default();
                 println!("  [{i}]={f:?}{tt}");
             }
             cur = match e.type_id {
-                133 => e.fields.get(7).map(|f| f.as_ptr()).unwrap_or(0),
+                133 => file.entities.fields(e).get(7).map(|f| f.as_ptr()).unwrap_or(0),
                 137 => {
                     // show surface AND the 2D spline's control points
-                    let surf = e.fields.get(7).map(|f| f.as_ptr()).unwrap_or(0);
-                    let bc = e.fields.get(8).map(|f| f.as_ptr()).unwrap_or(0);
+                    let surf = file.entities.fields(e).get(7).map(|f| f.as_ptr()).unwrap_or(0);
+                    let bc = file.entities.fields(e).get(8).map(|f| f.as_ptr()).unwrap_or(0);
                     if let Some(b) = index.get(&bc) {
                         let inner = if b.type_id == 134 {
-                            b.fields.get(7).map(|f| f.as_ptr()).unwrap_or(0)
+                            file.entities.fields(b).get(7).map(|f| f.as_ptr()).unwrap_or(0)
                         } else { bc };
                         if let Some(n) = index.get(&inner) {
-                            let vp = n.fields.get(9).map(|f| f.as_ptr()).unwrap_or(0);
+                            let vp = file.entities.fields(n).get(9).map(|f| f.as_ptr()).unwrap_or(0);
                             if let Some(v) = index.get(&vp) {
                                 println!("  2D poles first 8: {:?}", &v.var_f64()[..v.var_f64().len().min(8)]);
                             }
@@ -344,14 +344,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut vertex_at: BTreeMap<usize, usize> = BTreeMap::new();
         let mut null_vertex_at4 = 0usize;
         for e in file.entities.iter().filter(|e| e.type_id == 17) {
-            *widths.entry(e.fields.len()).or_default() += 1;
-            for (i, f) in e.fields.iter().enumerate() {
+            *widths.entry(file.entities.fields(e).len()).or_default() += 1;
+            for (i, f) in file.entities.fields(e).iter().enumerate() {
                 if type_of(f.as_ptr()) == Some(18) {
                     *vertex_at.entry(i).or_default() += 1;
                 }
             }
-            let a = if e.fields.len() < 10 { 1 } else { 0 };
-            if e.fields.get(4 - a).map(|f| f.as_ptr()).unwrap_or(0) == 0 {
+            let a = if file.entities.fields(e).len() < 10 { 1 } else { 0 };
+            if file.entities.fields(e).get(4 - a).map(|f| f.as_ptr()).unwrap_or(0) == 0 {
                 null_vertex_at4 += 1;
             }
         }

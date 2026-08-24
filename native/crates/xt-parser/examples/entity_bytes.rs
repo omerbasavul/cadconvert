@@ -28,10 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut with_var = 0usize;
     let mut var_items = 0usize;
     let mut extra = 0usize;
-    for e in &entities {
-        fields += e.fields.len();
-        extra += e.extra.len();
-        for f in e.fields.iter().chain(&e.extra) {
+    for e in entities.iter() {
+        fields += entities.fields(e).len();
+        extra += entities.extra(e).len();
+        for f in entities.fields(e).iter().chain(entities.extra(e)) {
             match f {
                 FieldVal::Mat3(_) => mat3 += 1,
                 FieldVal::Vec3(_) => vec3 += 1,
@@ -51,8 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // question: 24 bytes for a Vec3 makes every field 32, and 95% of fields
     // hold eight or less.
     let mut by_variant = std::collections::BTreeMap::<&str, usize>::new();
-    for e in &entities {
-        for f in e.fields.iter().chain(e.extra.iter()) {
+    for e in entities.iter() {
+        for f in entities.fields(e).iter().chain(entities.extra(e).iter()) {
             *by_variant.entry(match f {
                 FieldVal::Int(_) => "Int(8)",
                 FieldVal::Float(_) => "Float(8)",
@@ -71,8 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // How many fields an entity has, which decides whether they can live in
     // the struct instead of in half a million separate allocations.
     let mut hist = std::collections::BTreeMap::<usize, usize>::new();
-    for e in &entities {
-        *hist.entry(e.fields.len()).or_default() += 1;
+    for e in entities.iter() {
+        *hist.entry(entities.fields(e).len()).or_default() += 1;
     }
     let n_e = entities.len();
     let mut run = 0usize;

@@ -15,7 +15,7 @@
 //! numbering differs between the two exports, but the pilot's correlation is
 //! exact per colour, so per-colour majority reflectivity transfers cleanly.
 
-use crate::entity::RawEntity;
+use crate::entity::{Entities, RawEntity};
 use crate::{Result, XtError};
 use std::collections::HashMap;
 
@@ -109,13 +109,13 @@ pub fn appearance_hints(text: &str) -> Result<AppearanceHints> {
 }
 
 /// The graph walk, separated for testing.
-pub fn hints_from_entities(entities: &[RawEntity]) -> AppearanceHints {
+pub fn hints_from_entities(entities: &Entities) -> AppearanceHints {
     let by_index: HashMap<usize, &RawEntity> = entities.iter().map(|e| (e.index, e)).collect();
 
     // ATTRIB_DEF (80) → its name, via the ATT_DEF_ID (79) it points at.
     let mut def_names: HashMap<usize, String> = HashMap::new();
     for e in entities.iter().filter(|e| e.type_id == 80) {
-        let ident = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = by_index.get(&ident) {
             def_names.insert(e.index, id_e.var_char().iter().collect());
         }
@@ -126,8 +126,8 @@ pub fn hints_from_entities(entities: &[RawEntity]) -> AppearanceHints {
     let mut body_names = Vec::new();
 
     for e in entities.iter().filter(|e| e.type_id == 81) {
-        let def = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
-        let owner = e.fields.get(2).map(|f| f.as_ptr()).unwrap_or(0);
+        let def = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let owner = entities.fields(e).get(2).map(|f| f.as_ptr()).unwrap_or(0);
         let Some(def_name) = def_names.get(&def) else {
             continue;
         };

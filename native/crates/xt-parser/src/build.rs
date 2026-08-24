@@ -5,19 +5,19 @@
 
 use std::collections::HashMap;
 
-use crate::entity::RawEntity;
+use crate::entity::{Entities, RawEntity};
 use crate::error::Result;
 use crate::schema;
 use crate::types::*;
 
 /// Build typed bodies from a raw entity list.
-pub fn build_bodies(entities: &[RawEntity]) -> Result<Vec<XtBody>> {
+pub fn build_bodies(entities: &Entities) -> Result<Vec<XtBody>> {
     // Index entities by (type_id, entity_index) for unambiguous lookup.
     // Multiple entities can share an entity_index (e.g. ATTRIBUTE and BODY both at idx=1).
     let mut by_type_index: HashMap<(u16, usize), &RawEntity> = HashMap::new();
     // Also a simple index for cases where type is known but index may collide.
     let mut by_index: HashMap<usize, &RawEntity> = HashMap::new();
-    for e in entities {
+    for e in entities.iter() {
         by_type_index.insert((e.type_id, e.index), e);
         by_index.insert(e.index, e);
     }
@@ -43,9 +43,9 @@ fn build_one_body(
     body_ent: &RawEntity,
     idx: &HashMap<usize, &RawEntity>,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
-    all_entities: &[RawEntity],
+    entities: &Entities,
 ) -> Result<XtBody> {
-    let f = &body_ent.fields;
+    let f = entities.fields(body_ent);
 
     // Field layout depends on the PS version and annotation diffs applied.
     //
@@ -100,17 +100,17 @@ fn build_one_body(
     };
 
     // Register geometry chains.
-    register_geometry_chain(f.get(surf_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, &mut body);
-    register_curve_chain(f.get(curve_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, &mut body);
-    register_point_chain(f.get(point_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, &mut body);
+    register_geometry_chain(f.get(surf_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, entities, &mut body);
+    register_curve_chain(f.get(curve_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, entities, &mut body);
+    register_point_chain(f.get(point_fi).map(|v| v.as_ptr()).unwrap_or(0), idx, entities, &mut body);
 
     // Build regions
     let region_ptr = f.get(region_fi).map(|v| v.as_ptr()).unwrap_or(0);
-    build_regions(region_ptr, by_ti, &mut body)?;
+    build_regions(region_ptr, by_ti, entities, &mut body)?;
 
     // Build shells → faces → loops → fins
     let shell_ptr = f.get(shell_fi).map(|v| v.as_ptr()).unwrap_or(0);
-    build_shells(shell_ptr, idx, by_ti, all_entities, &mut body)?;
+    build_shells(shell_ptr, idx, by_ti, entities, &mut body)?;
 
     Ok(body)
 }
@@ -120,16 +120,17 @@ fn build_one_body(
 fn register_geometry_chain(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
     body: &mut XtBody,
 ) {
     let mut visited = std::collections::HashSet::new();
     while ptr != 0 && visited.insert(ptr) {
         if let Some(ent) = idx.get(&ptr) {
-            if let Some(surf) = build_surface(ent, idx) {
+            if let Some(surf) = build_surface(ent, idx, entities) {
                 body.surfaces.insert(ptr, surf);
             }
             // next surface in chain: field[3]
-            ptr = ent.fields.get(3).map(|v| v.as_ptr()).unwrap_or(0);
+            ptr = entities.fields(ent).get(3).map(|v| v.as_ptr()).unwrap_or(0);
         } else {
             break;
         }
@@ -139,15 +140,16 @@ fn register_geometry_chain(
 fn register_curve_chain(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
     body: &mut XtBody,
 ) {
     let mut visited = std::collections::HashSet::new();
     while ptr != 0 && visited.insert(ptr) {
         if let Some(ent) = idx.get(&ptr) {
-            if let Some(curve) = build_curve(ent, idx) {
+            if let Some(curve) = build_curve(ent, idx, entities) {
                 body.curves.insert(ptr, curve);
             }
-            ptr = ent.fields.get(3).map(|v| v.as_ptr()).unwrap_or(0);
+            ptr = entities.fields(ent).get(3).map(|v| v.as_ptr()).unwrap_or(0);
         } else {
             break;
         }
@@ -157,16 +159,17 @@ fn register_curve_chain(
 fn register_point_chain(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
     body: &mut XtBody,
 ) {
     let mut visited = std::collections::HashSet::new();
     while ptr != 0 && visited.insert(ptr) {
         if let Some(ent) = idx.get(&ptr) {
             if ent.type_id == schema::POINT {
-                let pos = ent.fields.get(5).map(|v| v.as_vec3()).unwrap_or([0.0; 3]);
+                let pos = entities.fields(ent).get(5).map(|v| v.as_vec3()).unwrap_or([0.0; 3]);
                 body.points.insert(ptr, pos);
             }
-            ptr = ent.fields.get(3).map(|v| v.as_ptr()).unwrap_or(0);
+            ptr = entities.fields(ent).get(3).map(|v| v.as_ptr()).unwrap_or(0);
         } else {
             break;
         }
@@ -175,8 +178,12 @@ fn register_point_chain(
 
 // ── Surface builders ─────────────────────────────────────────────────────────
 
-fn build_surface(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<XtSurface> {
-    let f = &ent.fields;
+fn build_surface(
+    ent: &RawEntity,
+    idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
+) -> Option<XtSurface> {
+    let f = entities.fields(ent);
     match ent.type_id {
         schema::PLANE => {
             let point = f.get(7)?.as_vec3();
@@ -259,7 +266,7 @@ fn build_surface(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<Xt
         schema::B_SURFACE => {
             // Resolve NURBS_SURF sub-entity
             let nurbs_ptr = f.get(7)?.as_ptr();
-            build_bspline_surface(nurbs_ptr, idx)
+            build_bspline_surface(nurbs_ptr, idx, entities)
         }
         schema::SWEPT_SURF => {
             let curve_ptr = f.get(7)?.as_ptr();
@@ -310,12 +317,13 @@ fn build_surface(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<Xt
 fn build_bspline_surface(
     nurbs_ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
 ) -> Option<XtSurface> {
     let nurbs = idx.get(&nurbs_ptr)?;
     if nurbs.type_id != schema::NURBS_SURF {
         return None;
     }
-    let f = &nurbs.fields;
+    let f = entities.fields(nurbs);
 
     // NURBS_SURF layout from sch_13006 (20 transmitted fields):
     //   [0]=u_periodic(l), [1]=v_periodic(l), [2]=u_degree(n), [3]=v_degree(n),
@@ -371,8 +379,12 @@ fn build_bspline_surface(
 
 // ── Curve builders ───────────────────────────────────────────────────────────
 
-fn build_curve(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<XtCurve> {
-    let f = &ent.fields;
+fn build_curve(
+    ent: &RawEntity,
+    idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
+) -> Option<XtCurve> {
+    let f = entities.fields(ent);
     match ent.type_id {
         schema::LINE => {
             let pos = f.get(7)?.as_vec3();
@@ -416,7 +428,7 @@ fn build_curve(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<XtCu
         }
         schema::B_CURVE => {
             let nurbs_ptr = f.get(7)?.as_ptr();
-            build_bspline_curve(nurbs_ptr, idx)
+            build_bspline_curve(nurbs_ptr, idx, entities)
         }
         schema::INTERSECTION => {
             // P2 at [7] stores only surf1 (surf2 discarded by read_field_value).
@@ -438,7 +450,7 @@ fn build_curve(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<XtCu
             let surface_ptr = f.get(7)?.as_ptr();
             let bcurve_ptr = f.get(8)?.as_ptr();
             // The B_CURVE for an SP_CURVE is a 2D curve in parameter space.
-            let curve_2d = build_bspline_curve(bcurve_ptr, idx)?;
+            let curve_2d = build_bspline_curve(bcurve_ptr, idx, entities)?;
             Some(XtCurve::SPCurve(XtSPCurve {
                 surface_key: surface_ptr,
                 curve_2d: match curve_2d {
@@ -466,11 +478,12 @@ fn build_curve(ent: &RawEntity, idx: &HashMap<usize, &RawEntity>) -> Option<XtCu
 fn build_bspline_curve(
     nurbs_ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
 ) -> Option<XtCurve> {
     // The pointer might be to B_CURVE → NURBS_CURVE, or directly to NURBS_CURVE
     let ent = idx.get(&nurbs_ptr)?;
     let nurbs = if ent.type_id == schema::B_CURVE {
-        let inner_ptr = ent.fields.get(7)?.as_ptr();
+        let inner_ptr = entities.fields(ent).get(7)?.as_ptr();
         idx.get(&inner_ptr)?
     } else if ent.type_id == schema::NURBS_CURVE {
         ent
@@ -478,7 +491,7 @@ fn build_bspline_curve(
         return None;
     };
 
-    let f = &nurbs.fields;
+    let f = entities.fields(nurbs);
     let degree = f.get(0)?.as_i64() as u32;
     let n_verts = f.get(1)?.as_i64() as usize;
     let vert_dim = f.get(2)?.as_i64() as usize;
@@ -513,6 +526,7 @@ fn build_bspline_curve(
 fn build_regions(
     ptr: usize,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
+    entities: &Entities,
     body: &mut XtBody,
 ) -> Result<()> {
     let mut visited = std::collections::HashSet::new();
@@ -521,8 +535,8 @@ fn build_regions(
             // sch_13006 REGION fields:
             //   0:D(node_id), 1:P(attr), 2:P(body), 3:P(next),
             //   4:P(prev), 5:P(shell), 6:C(type='S'/'V')
-            let is_solid = ent.fields.get(6).map(|v| v.as_char()) == Some('S');
-            let shell_ptr = ent.fields.get(5).map(|v| v.as_ptr()).unwrap_or(0);
+            let is_solid = entities.fields(ent).get(6).map(|v| v.as_char()) == Some('S');
+            let shell_ptr = entities.fields(ent).get(5).map(|v| v.as_ptr()).unwrap_or(0);
             let mut shell_indices = Vec::new();
             let mut sp = shell_ptr;
             let mut sv = std::collections::HashSet::new();
@@ -530,7 +544,7 @@ fn build_regions(
                 shell_indices.push(sp);
                 if let Some(se) = by_ti.get(&(schema::SHELL, sp)) {
                     // SHELL next_shell: field[3]
-                    sp = se.fields.get(3).map(|v| v.as_ptr()).unwrap_or(0);
+                    sp = entities.fields(se).get(3).map(|v| v.as_ptr()).unwrap_or(0);
                 } else {
                     break;
                 }
@@ -551,7 +565,7 @@ fn build_shells(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
-    all_entities: &[RawEntity],
+    entities: &Entities,
     body: &mut XtBody,
 ) -> Result<()> {
     let mut visited = std::collections::HashSet::new();
@@ -567,27 +581,27 @@ fn build_shells(
             let shell_idx = ptr;
 
             // Try to find a face entry point: prefer field[4] if it resolves to a FACE.
-            let initial_face_ptr = shell_ent.fields.get(4).map(|v| v.as_ptr()).unwrap_or(0);
+            let initial_face_ptr = entities.fields(shell_ent).get(4).map(|v| v.as_ptr()).unwrap_or(0);
             let face_start = if by_ti.contains_key(&(schema::FACE, initial_face_ptr)) {
                 initial_face_ptr
             } else {
                 // Fallback: scan all entities for a FACE with shell back-ptr == shell_idx.
                 // FACE field[6] is the shell back-pointer.
-                all_entities
+                entities
                     .iter()
                     .find(|e| {
                         e.type_id == schema::FACE
-                            && e.fields.get(6).map(|v| v.as_ptr()).unwrap_or(0) == shell_idx
+                            && entities.fields(e).get(6).map(|v| v.as_ptr()).unwrap_or(0) == shell_idx
                     })
                     .map(|e| e.index)
                     .unwrap_or(0)
             };
 
-            let faces = build_faces(face_start, idx, by_ti, all_entities, body)?;
+            let faces = build_faces(face_start, idx, by_ti, entities, body)?;
             body.shells.push(XtShell { faces });
 
             // next_shell: SHELL field[3]
-            ptr = shell_ent.fields.get(3).map(|v| v.as_ptr()).unwrap_or(0);
+            ptr = entities.fields(shell_ent).get(3).map(|v| v.as_ptr()).unwrap_or(0);
         } else {
             break;
         }
@@ -599,7 +613,7 @@ fn build_faces(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
-    _all_entities: &[RawEntity],
+    entities: &Entities,
     body: &mut XtBody,
 ) -> Result<Vec<XtFace>> {
     let mut faces = Vec::new();
@@ -613,7 +627,7 @@ fn build_faces(
             //   [6]=shell(p), [7]=surface(p), [8]=sense(c),
             //   [9]=next_on_surface(p), [10]=prev_on_surface(p), [11]=next_front(p),
             //   [12]=prev_front(p), [13]=front_shell(p)
-            let f = &face_ent.fields;
+            let f = entities.fields(face_ent);
             let node_id = f.get(0).map(|v| v.as_i64()).unwrap_or(0);
             let tolerance = f.get(2).map(|v| v.as_f64()).unwrap_or(0.0);
             let surface_ptr = f.get(7).map(|v| v.as_ptr()).unwrap_or(0);
@@ -622,7 +636,7 @@ fn build_faces(
             // If surface not yet registered, try to register it now.
             if surface_ptr != 0 && !body.surfaces.contains_key(&surface_ptr) {
                 if let Some(se) = idx.get(&surface_ptr) {
-                    if let Some(surf) = build_surface(se, idx) {
+                    if let Some(surf) = build_surface(se, idx, entities) {
                         body.surfaces.insert(surface_ptr, surf);
                     }
                 }
@@ -632,7 +646,7 @@ fn build_faces(
             // Surface sense is at field 6 of the surface entity.
             let geom_sense = idx
                 .get(&surface_ptr)
-                .and_then(|se| se.fields.get(6))
+                .and_then(|se| entities.fields(se).get(6))
                 .map(|v| v.as_char())
                 .unwrap_or('+');
             let effective_sense = if (face_sense_ch == 'R' || face_sense_ch == '-')
@@ -645,7 +659,7 @@ fn build_faces(
 
             // Build loops starting from field 5 (first loop).
             let loop_ptr = f.get(5).map(|v| v.as_ptr()).unwrap_or(0);
-            let loops = build_loops(loop_ptr, idx, by_ti, body)?;
+            let loops = build_loops(loop_ptr, idx, entities, by_ti, body)?;
 
             faces.push(XtFace {
                 node_id,
@@ -668,6 +682,7 @@ fn build_faces(
 fn build_loops(
     mut ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
     body: &mut XtBody,
 ) -> Result<Vec<XtLoop>> {
@@ -678,9 +693,9 @@ fn build_loops(
         if let Some(loop_ent) = by_ti.get(&(schema::LOOP, ptr)) {
             // LOOP fields (5 total):
             //   [0]=node_id(d), [1]=attribs(p), [2]=halfedge(p), [3]=face(p), [4]=next(p)
-            let fin_ptr = loop_ent.fields.get(2).map(|v| v.as_ptr()).unwrap_or(0);
+            let fin_ptr = entities.fields(loop_ent).get(2).map(|v| v.as_ptr()).unwrap_or(0);
 
-            let fins = build_fins(fin_ptr, idx, by_ti, body)?;
+            let fins = build_fins(fin_ptr, idx, entities, by_ti, body)?;
 
             let kind = if loops.is_empty() {
                 XtLoopKind::Outer
@@ -691,7 +706,7 @@ fn build_loops(
             loops.push(XtLoop { kind, fins });
 
             // next loop: LOOP field[4]
-            ptr = loop_ent.fields.get(4).map(|v| v.as_ptr()).unwrap_or(0);
+            ptr = entities.fields(loop_ent).get(4).map(|v| v.as_ptr()).unwrap_or(0);
         } else {
             break;
         }
@@ -703,6 +718,7 @@ fn build_loops(
 fn build_fins(
     first_ptr: usize,
     idx: &HashMap<usize, &RawEntity>,
+    entities: &Entities,
     by_ti: &HashMap<(u16, usize), &RawEntity>,
     body: &mut XtBody,
 ) -> Result<Vec<XtFin>> {
@@ -725,7 +741,7 @@ fn build_fins(
             // index down by one (see schema::standard_schema). The same FIN in
             // 500.076.x_t (V24) and 500.079UB.x_t (V10) differs only by that
             // leading `0`, so keying off the field count is exact.
-            let f = &fin_ent.fields;
+            let f = entities.fields(fin_ent);
             let a = if f.len() >= 10 { 0 } else { 1 };
             let edge_ptr = f.get(6 - a).map(|v| v.as_ptr()).unwrap_or(0);
             let vertex_ptr = f.get(4 - a).map(|v| v.as_ptr()).unwrap_or(0);
@@ -745,7 +761,7 @@ fn build_fins(
                     //   [4]=previous(p), [5]=next(p), [6]=curve(p), [7]=next_on_curve(p),
                     //   [8]=prev_on_curve(p), [9]=owner(p)
                     // Note: sense is encoded in the halfedge pointer sign, not a separate field.
-                    let ef = &edge_ent.fields;
+                    let ef = &entities.fields(edge_ent);
                     let e_node_id = ef.get(0).map(|v| v.as_i64()).unwrap_or(0);
                     let curve_ptr = ef.get(6).map(|v| v.as_ptr()).unwrap_or(0);
                     let e_sense = XtSense::Forward;
@@ -754,7 +770,7 @@ fn build_fins(
                     // Register the edge's curve.
                     if curve_ptr != 0 && !body.curves.contains_key(&curve_ptr) {
                         if let Some(ce) = idx.get(&curve_ptr) {
-                            if let Some(c) = build_curve(ce, idx) {
+                            if let Some(c) = build_curve(ce, idx, entities) {
                                 body.curves.insert(curve_ptr, c);
                             }
                         }
@@ -778,7 +794,7 @@ fn build_fins(
                     // VERTEX fields (8 total):
                     //   [0]=node_id(d), [1]=attribs(p), [2]=halfedge(p), [3]=previous(p),
                     //   [4]=next(p), [5]=point(p), [6]=tolerance(f), [7]=owner(p)
-                    let vf = &vert_ent.fields;
+                    let vf = &entities.fields(vert_ent);
                     let v_node_id = vf.get(0).map(|v| v.as_i64()).unwrap_or(0);
                     let point_ptr = vf.get(5).map(|v| v.as_ptr()).unwrap_or(0);
                     let v_tolerance = vf.get(6).map(|v| v.as_f64()).unwrap_or(0.0);
@@ -786,7 +802,7 @@ fn build_fins(
                     // Register the point.
                     if point_ptr != 0 && !body.points.contains_key(&point_ptr) {
                         if let Some(pe) = by_ti.get(&(schema::POINT, point_ptr)) {
-                            let pos = pe.fields.get(5).map(|v| v.as_vec3()).unwrap_or([0.0; 3]);
+                            let pos = entities.fields(pe).get(5).map(|v| v.as_vec3()).unwrap_or([0.0; 3]);
                             body.points.insert(point_ptr, pos);
                         }
                     }
@@ -805,7 +821,7 @@ fn build_fins(
             // Register pcurve.
             if pcurve_ptr != 0 && !body.curves.contains_key(&pcurve_ptr) {
                 if let Some(pce) = idx.get(&pcurve_ptr) {
-                    if let Some(c) = build_curve(pce, idx) {
+                    if let Some(c) = build_curve(pce, idx, entities) {
                         body.curves.insert(pcurve_ptr, c);
                     }
                 }

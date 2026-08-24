@@ -212,7 +212,7 @@ fn to_scene_from(
 /// instance stand alone at the root, which is also the whole story for
 /// single-body exports.
 fn place_instances(
-    entities: &[xt_parser::entity::RawEntity],
+    entities: &xt_parser::entity::Entities,
     geometry_of_body: &FxHashMap<usize, (GeometryId, String)>,
     scene: &mut Scene,
     report: &mut Report,
@@ -220,7 +220,7 @@ fn place_instances(
     let index: FxHashMap<usize, &xt_parser::entity::RawEntity> =
         entities.iter().map(|e| (e.index, e)).collect();
     let ptr = |e: &xt_parser::entity::RawEntity, i: usize| {
-        e.fields.get(i).map(|f| f.as_ptr()).unwrap_or(0)
+        entities.fields(e).get(i).map(|f| f.as_ptr()).unwrap_or(0)
     };
 
     // INSTANCE: [3]=part (BODY or ASSEMBLY), [4]=transform, [5]=owner assembly.
@@ -237,7 +237,7 @@ fn place_instances(
         let transform = index
             .get(&ptr(e, 4))
             .filter(|t| t.type_id == 100)
-            .map(|t| transform_of(t))
+            .map(|t| transform_of(entities, t))
             .unwrap_or(Transform::IDENTITY);
         if index.get(&part).is_some_and(|p| p.type_id == 12) {
             instanced_bodies.insert(part);
@@ -336,17 +336,17 @@ fn place_instances(
 /// TRANSFORM (100): `[4]` rotation matrix (nine floats), `[5]` translation,
 /// `[6]` scale. Translation is in the file's metres and the scene is
 /// millimetres, so it scales by a thousand; the rotation does not.
-fn transform_of(t: &xt_parser::entity::RawEntity) -> Transform {
-    let m3 = t.fields.get(4).and_then(|f| f.as_mat3()).unwrap_or([
+fn transform_of(entities: &xt_parser::entity::Entities, t: &xt_parser::entity::RawEntity) -> Transform {
+    let m3 = entities.fields(t).get(4).and_then(|f| f.as_mat3()).unwrap_or([
         1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
     ]);
-    let tr = t
-        .fields
+    let tr = entities
+        .fields(t)
         .get(5)
         .map(|f| f.as_vec3())
         .unwrap_or([0.0; 3]);
-    let scale = t
-        .fields
+    let scale = entities
+        .fields(t)
         .get(6)
         .map(|f| f.as_f64())
         .filter(|s| s.is_finite() && *s > 0.0)
@@ -363,14 +363,14 @@ fn transform_of(t: &xt_parser::entity::RawEntity) -> Transform {
 
 /// Per-face colour and reflectivity from the attribute graph.
 fn per_face_appearance(
-    entities: &[xt_parser::entity::RawEntity],
+    entities: &xt_parser::entity::Entities,
 ) -> FxHashMap<usize, (ColourEvidence, Option<f32>)> {
     let index: FxHashMap<usize, &xt_parser::entity::RawEntity> =
         entities.iter().map(|e| (e.index, e)).collect();
 
     let mut def_names: FxHashMap<usize, String> = FxHashMap::default();
     for e in entities.iter().filter(|e| e.type_id == 80) {
-        let ident = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = index.get(&ident) {
             def_names.insert(e.index, id_e.var_char().iter().collect());
         }
@@ -379,8 +379,8 @@ fn per_face_appearance(
     let mut colour: FxHashMap<usize, [f32; 3]> = FxHashMap::default();
     let mut refl: FxHashMap<usize, f32> = FxHashMap::default();
     for e in entities.iter().filter(|e| e.type_id == 81) {
-        let def = e.fields.get(1).map(|f| f.as_ptr()).unwrap_or(0);
-        let owner = e.fields.get(2).map(|f| f.as_ptr()).unwrap_or(0);
+        let def = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
+        let owner = entities.fields(e).get(2).map(|f| f.as_ptr()).unwrap_or(0);
         let Some(def_name) = def_names.get(&def) else {
             continue;
         };

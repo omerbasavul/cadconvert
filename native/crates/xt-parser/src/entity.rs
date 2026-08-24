@@ -112,7 +112,18 @@ impl FieldVal {
 pub struct RawEntity {
     pub type_id: u16,
     pub index: usize,
-    pub fields: Vec<FieldVal>,
+    /// Where this entity's fields sit in [`Entities::arena`].
+    ///
+    /// A range rather than a `Vec` of its own. Half a million entities each
+    /// owning a small vector is half a million allocations, and the allocator
+    /// never gives that memory back to the kernel afterwards: it is freed into
+    /// free lists of a hundred bytes each, and the tessellator that runs next
+    /// asks for buffers of megabytes. Measured on the pilot, dropping the
+    /// entity graph returned **nothing** while dropping the meshes — which are
+    /// a few large buffers — returned 148 MB.
+    ///
+    /// One arena is two allocations for the whole graph, and they come back.
+    fields: Span,
     /// The variable-length tails, allocated only for the entities that have
     /// any.
     ///
@@ -128,7 +139,80 @@ pub struct RawEntity {
     /// otherwise be consumed from the stream and thrown away. Without it an
     /// intersection can only be taken from the sparse chart the file also
     /// carries, which states its own error in millimetres.
-    pub extra: Vec<FieldVal>,
+    extra: Span,
+}
+
+/// A run of fields inside the arena.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Span {
+    start: u32,
+    len: u32,
+}
+
+impl Span {
+    fn of(start: usize, len: usize) -> Span {
+        Span {
+            start: start as u32,
+            len: len as u32,
+        }
+    }
+}
+
+/// Every entity of a file, and the one array their fields live in.
+///
+/// Indexing goes through here rather than through the entity because the
+/// entity does not own its fields — see [`RawEntity::fields`]. It derefs to
+/// the entities, so anything that only wants to walk them can.
+#[derive(Debug, Clone, Default)]
+pub struct Entities {
+    items: Vec<RawEntity>,
+    arena: Vec<FieldVal>,
+}
+
+impl Entities {
+    pub fn with_capacity(entities: usize, fields: usize) -> Entities {
+        Entities {
+            items: Vec::with_capacity(entities),
+            arena: Vec::with_capacity(fields),
+        }
+    }
+
+    /// The fields of one entity.
+    pub fn fields(&self, e: &RawEntity) -> &[FieldVal] {
+        let (s, n) = (e.fields.start as usize, e.fields.len as usize);
+        &self.arena[s..s + n]
+    }
+
+    /// The elements of fixed arrays past the first. See [`RawEntity::extra`].
+    pub fn extra(&self, e: &RawEntity) -> &[FieldVal] {
+        let (s, n) = (e.extra.start as usize, e.extra.len as usize);
+        &self.arena[s..s + n]
+    }
+
+    /// The fields of the entity at `i`, for a caller holding an index rather
+    /// than a reference.
+    pub fn fields_at(&self, i: usize) -> &[FieldVal] {
+        self.fields(&self.items[i])
+    }
+
+    pub fn arena_len(&self) -> usize {
+        self.arena.len()
+    }
+
+    fn push(&mut self, mut entity: RawEntity, fields: &[FieldVal], extra: &[FieldVal]) {
+        entity.fields = Span::of(self.arena.len(), fields.len());
+        self.arena.extend_from_slice(fields);
+        entity.extra = Span::of(self.arena.len(), extra.len());
+        self.arena.extend_from_slice(extra);
+        self.items.push(entity);
+    }
+}
+
+impl std::ops::Deref for Entities {
+    type Target = [RawEntity];
+    fn deref(&self) -> &[RawEntity] {
+        &self.items
+    }
 }
 
 /// The variable-length tail of one entity. See [`RawEntity::var`].
@@ -205,7 +289,7 @@ struct InlineSchema {
 /// Parse all entities from the compact transmit format.
 /// `input` must have newlines already stripped.
 /// `partition_count` is from the preamble (usually 0).
-pub fn parse_entities(input: &mut &str, partition_count: usize) -> Result<Vec<RawEntity>> {
+pub fn parse_entities(input: &mut &str, partition_count: usize) -> Result<Entities> {
     parse_entities_opt(input, partition_count, true, 0).map(|(e, _)| e)
 }
 
@@ -220,7 +304,7 @@ pub fn parse_entities_opt(
     partition_count: usize,
     inline_schemas: bool,
     key_major: u32,
-) -> Result<(Vec<RawEntity>, Option<Truncation>)> {
+) -> Result<(Entities, Option<Truncation>)> {
     parse_entities_keeping(input, partition_count, inline_schemas, key_major, None)
 }
 
@@ -244,9 +328,19 @@ pub fn parse_entities_keeping(
     inline_schemas: bool,
     key_major: u32,
     keep: Option<&[u16]>,
-) -> Result<(Vec<RawEntity>, Option<Truncation>)> {
+) -> Result<(Entities, Option<Truncation>)> {
     let mut schema_cache: HashMap<u16, InlineSchema> = HashMap::new();
-    let mut entities: Vec<RawEntity> = Vec::new();
+    // Sized from the text rather than grown into. One arena that doubles is
+    // one realloc that holds the old buffer and the new at once, and at 46 MB
+    // that transient is bigger than anything it saves: the peak went *up* when
+    // the arena went in, until this line.
+    //
+    // The stream is one token per field and a token averages a dozen bytes, so
+    // the length of the body is the estimate. Being wrong costs a realloc,
+    // which is what would have happened anyway.
+    let mut entities = Entities::with_capacity(input.len() / 70, input.len() / 12);
+    // Reused for every entity; see `read_entity_fields`.
+    let (mut scratch, mut scratch_extra) = (Vec::new(), Vec::new());
     // How many were read, which stops being the same as how many were kept the
     // moment a filter is in play. The truncation report is about the stream,
     // so it counts what was read.
@@ -313,7 +407,15 @@ pub fn parse_entities_keeping(
             };
 
             let entity_index = read_int32(input)? as usize;
-            let entity = read_entity_fields(input, type_id, entity_index, var_count, &schema)?;
+            let entity = read_entity_fields(
+                input,
+                type_id,
+                entity_index,
+                var_count,
+                &schema,
+                &mut scratch,
+                &mut scratch_extra,
+            )?;
             for _ in 0..partition_count {
                 let _ = read_int32(input)?;
             }
@@ -325,13 +427,13 @@ pub fn parse_entities_keeping(
                 if std::env::var_os("XT_TRACE").is_some() {
                     eprintln!(
                         "[trace] #{} type={} idx={} fields={} next={:?}",
-                        read, entity.type_id, entity.index, entity.fields.len(),
+                        read, entity.type_id, entity.index, scratch.len(),
                         &input[..40.min(input.len())],
                     );
                 }
                 read += 1;
                 if keep.is_none_or(|k| k.binary_search(&entity.type_id).is_ok()) {
-                    entities.push(entity)
+                    entities.push(entity, &scratch, &scratch_extra);
                 }
             }
             Err(e) => {
@@ -569,27 +671,35 @@ fn read_field_descriptor(input: &mut &str) -> Result<FieldDesc> {
 
 // ── Entity field reading ────────────────────────────────────────────────────
 
+/// Read one entity into `fields` and `extra`, which the caller reuses.
+///
+/// Scratch rather than fresh vectors: an entity's fields end up in the arena,
+/// and a `Vec` per entity on the way there is the half-million allocations
+/// this arrangement exists to avoid.
 fn read_entity_fields(
     input: &mut &str,
     type_id: u16,
     index: usize,
     var_count: usize,
     schema: &InlineSchema,
+    fields: &mut Vec<FieldVal>,
+    extra: &mut Vec<FieldVal>,
 ) -> Result<RawEntity> {
+    fields.clear();
+    extra.clear();
+    fields.reserve(schema.fields.len());
     let mut entity = RawEntity {
         type_id,
         index,
-        fields: Vec::with_capacity(schema.fields.len()),
+        fields: Span::default(),
         var: None,
-        extra: Vec::new(),
+        extra: Span::default(),
     };
 
     // Read fixed fields first.
     for fd in &schema.fields {
-        let mut extra = Vec::new();
-        let val = read_field_value(input, fd, &mut extra)?;
-        entity.fields.push(val);
-        entity.extra.append(&mut extra);
+        let val = read_field_value(input, fd, extra)?;
+        fields.push(val);
     }
 
     // If the entity has a trailing variable-length array, read it.
@@ -599,6 +709,7 @@ fn read_entity_fields(
     // h-type element is in the fixed section, so variable count = version - 1.
     if schema.is_variable {
         let has_fixed_hvec = schema.fields.iter().any(|f| f.type_char == 'v');
+        let _ = &fields;
         let count = if has_fixed_hvec && var_count > 0 {
             var_count - 1
         } else {
