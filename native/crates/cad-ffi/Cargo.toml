@@ -14,6 +14,14 @@ description = "C ABI for the CAD converter, for P/Invoke and other foreign calle
 name = "cadconvert_native"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+# On by default, and off for a Rust caller who links the `rlib` and has already
+# chosen an allocator of their own — a library that sets one decides for its
+# whole process, which is defensible in a `cdylib` and rude in an `rlib`.
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
 cad-convert.workspace = true
 cad-tess.workspace = true
+mimalloc = { workspace = true, optional = true }

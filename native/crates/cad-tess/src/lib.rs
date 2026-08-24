@@ -90,11 +90,10 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
     let scale = scene.vertex_bounds().diagonal();
     let resolved = options.resolve(scale);
 
-    let materials: Vec<(Option<MaterialId>, Vec<Option<MaterialId>>)> = scene
-        .geometry
-        .iter()
-        .map(|g| (g.material, g.face_materials.clone()))
-        .collect();
+    // A debug run wants one part's faces, not an assembly's; every probe in
+    // this crate prints per face, and fifty parts' worth of that buries the
+    // one being chased.
+    let only = std::env::var("CAD_TESS_ONLY").ok();
 
     // One body at a time, and its faces in parallel.
     //
@@ -104,31 +103,50 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
     // saturate the machine — the pilot's largest is 513 700 triangles — so
     // body-level parallelism bought almost no wall clock and multiplied the
     // live set by the thread count.
-    let results: Vec<(Mesh, Report)> = scene
-        .geometry
-        .iter()
-        .zip(materials.iter())
-        .map(|(g, (material, face_materials))| match &g.brep {
-            // A debug run wants one part's faces, not an assembly's; every
-            // probe in this crate prints per face, and fifty parts' worth of
-            // that buries the one being chased.
-            Some(solid)
-                if std::env::var("CAD_TESS_ONLY")
-                    .map(|w| g.name.contains(&w) || solid.name.contains(&w))
-                    .unwrap_or(true) =>
-            {
-                tessellate_solid(&g.name, solid, *material, face_materials, &resolved)
-            }
-            _ => (Mesh::default(), Report::default()),
-        })
-        .collect();
-
+    //
+    // Sequential also makes the exchange below possible: a body's mesh is
+    // finished before the next one starts, so the boundary representation it
+    // was built from can go back to the allocator right there. Collecting the
+    // meshes first and assigning them afterwards — which this did — holds
+    // every brep and every mesh at once for no reason but the borrow checker.
     let mut report = Report::default();
-    for (g, (mesh, r)) in scene.geometry.iter_mut().zip(results) {
+    for g in scene.geometry.iter_mut() {
+        let wanted = match &g.brep {
+            Some(solid) => only
+                .as_ref()
+                .map(|w| g.name.contains(w) || solid.name.contains(w))
+                .unwrap_or(true),
+            None => false,
+        };
+        if !wanted {
+            continue;
+        }
+
+        // Taken where the caller allows it, borrowed where it does not. See
+        // [`Options::release_brep`]: on the pilot this is 41.9 MB that has no
+        // reader left, standing through the write.
+        let taken = if options.release_brep {
+            g.brep.take()
+        } else {
+            None
+        };
+        let Some(solid) = taken.as_ref().or(g.brep.as_ref()) else {
+            continue;
+        };
+        let (mesh, r) = tessellate_solid(
+            &g.name,
+            solid,
+            g.material,
+            &g.face_materials,
+            &resolved,
+        );
+        report.merge(r);
+        // Before the mesh is stored, so the two are never both charged to this
+        // body at once.
+        drop(taken);
         if !mesh.is_empty() {
             g.mesh = Some(mesh);
         }
-        report.merge(r);
     }
     report
 }

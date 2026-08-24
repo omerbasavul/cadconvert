@@ -168,7 +168,15 @@ pub fn convert(input: &Path, output: &Path, options: &Options) -> Result<Summary
         ..Default::default()
     };
 
-    let report = cad_tess::tessellate_scene(&mut scene, &options.quality);
+    // This function writes a file and drops the scene; the exact geometry
+    // cannot be observed after it returns, so there is no caller to surprise
+    // by handing it back early. `read` is where a caller who wants the
+    // boundary representation goes.
+    let quality = cad_tess::Options {
+        release_brep: true,
+        ..options.quality
+    };
+    let report = cad_tess::tessellate_scene(&mut scene, &quality);
     summary.faces = report.faces_ok + report.failed.len();
     summary.faces_meshed = report.faces_ok;
     summary.triangles = report.triangles;

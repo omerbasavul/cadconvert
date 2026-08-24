@@ -18,6 +18,14 @@ rayon = "1"
 memchr = "2"
 rustc-hash = "2"
 log = "0.4"
+# Not a performance ornament. The converter frees a body's boundary
+# representation — thousands of small blocks — and then asks for a mesh buffer
+# of megabytes; the system allocator on macOS cannot put the first inside the
+# second, and 42 MB of released memory moved the peak by nothing at all.
+# Measured on the pilot: 291 -> 256 MB and 31.4 -> 22.2 s, byte-identical
+# output. Binaries only; a library that sets a global allocator decides for
+# its callers.
+mimalloc = { version = "0.1", default-features = false }
 
 cad-ir = { path = "crates/cad-ir" }
 cad-step = { path = "crates/cad-step" }

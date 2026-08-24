@@ -27,6 +27,22 @@ pub struct Options {
     /// triangles spanning its whole height — geometrically inside tolerance,
     /// and visibly wrong once it is shaded.
     pub interior_points: bool,
+    /// Hand back each body's boundary representation as soon as its mesh
+    /// exists.
+    ///
+    /// Nothing downstream of the tessellator reads a `brep` — not the material
+    /// resolver, not the UV projection, not either writer. On the pilot
+    /// assembly the boundary representations come to 41.9 MB against 63.9 MB
+    /// of meshes, and holding all of the first while building all of the
+    /// second is what put the tail of a conversion at 105 MB above the read.
+    /// Freed body by body, the two never both stand at full height.
+    ///
+    /// Off by default, because a `Scene` that has lost its exact geometry is a
+    /// surprise to a caller who wanted to compare mesh against surface — which
+    /// is what every diagnostic in this workspace does. The converters turn it
+    /// on; they write a mesh and then have no further use for the surfaces it
+    /// came from.
+    pub release_brep: bool,
 }
 
 impl Default for Options {
@@ -47,6 +63,7 @@ impl Default for Options {
             min_edge_segments: 1,
             max_depth: 12,
             interior_points: true,
+            release_brep: false,
         }
     }
 }

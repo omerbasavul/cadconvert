@@ -119,7 +119,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Tessellation too, because the peak is here and not in the read,
             // and because the question this instrument exists to answer is
             // whether what the reader gave back can be used again.
-            let quality = cad_tess::Options::default();
+            // As `convert` runs it: each body's boundary representation goes
+            // back the moment its mesh exists, so the delta printed below is
+            // the mesh's own cost and not the mesh plus a brep with no reader.
+            let quality = cad_tess::Options {
+                release_brep: true,
+                ..cad_tess::Options::default()
+            };
             let report = cad_tess::tessellate_scene(&mut scene, &quality);
             step("after tessellating", &mut last);
             let (mut used, mut taken) = (0usize, 0usize);

@@ -13,3 +13,4 @@ path = "src/main.rs"
 cad-convert.workspace = true
 cad-tess.workspace = true
 cad-ir.workspace = true
+mimalloc.workspace = true

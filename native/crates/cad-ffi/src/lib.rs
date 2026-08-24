@@ -11,6 +11,18 @@
 //! returns was allocated by it and must come back to [`cadconvert_string_free`].
 //! Nothing the caller allocates is ever freed here.
 
+// The allocator this library's own work runs on. See the note in `cad-cli`:
+// the converter's Parasolid path is millions of small short-lived allocations
+// and then a handful of megabyte mesh buffers, and the system allocator on
+// macOS cannot lend the first back to the second. Measured on the pilot,
+// 291 MB and 31.9 s become 258 MB and 22.4 s, byte for byte the same file.
+//
+// A `cdylib` may say this: it is the whole process when the host is .NET
+// P/Invoking into it. An `rlib` caller who disagrees turns the feature off.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::ffi::{CStr, CString, c_char};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;

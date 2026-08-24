@@ -4,12 +4,23 @@
 //! an input, an output and four numbers; a dependency to read them would be
 //! larger than the program.
 
-// mimalloc was tried here as a global allocator, on the reading that the
-// converter's millions of small short-lived allocations are what set the
-// process's high-water mark. Measured on the pilot, it is worse: whole
-// conversion of the STEP 346–450 MB → 524–549 MB, of the Parasolid 395–496 →
-// 440–523. It trades memory for speed by holding freed pages, and memory is
-// what this needed. The system allocator stays.
+// This reverses an earlier decision recorded here, and the reason is the
+// instrument rather than the allocator. mimalloc was tried once and written
+// off as worse — "STEP 346–450 MB → 524–549, Parasolid 395–496 → 440–523".
+// Those are `maximum resident set size` under memory pressure: spreads of a
+// hundred megabytes on a figure whose real spread is two, which is paging and
+// not the program. Re-measured with `peak memory footprint`, the thread count
+// pinned, the two binaries run alternately and four runs each:
+//
+//     Parasolid   291 MB, 31.9 s   →   258 MB, 22.4 s
+//     STEP        280 MB, 12.1 s   →   280 MB, 10.0 s
+//
+// Byte-identical output on both. The Parasolid path is where the small
+// allocations are, and it is the one that gains; on the STEP the memory is a
+// wash and only the clock moves. Nothing got worse on either.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -168,7 +179,13 @@ fn run() -> Result<(), String> {
         let bodies = scene.geometry.len();
         let mut triangles = 0;
         if phase == Phase::Mesh {
-            let report = cad_tess::tessellate_scene(&mut scene, &options.quality);
+            // The same exchange `convert` makes, or this phase would report a
+            // peak the real pipeline never reaches.
+            let quality = cad_tess::Options {
+                release_brep: true,
+                ..options.quality
+            };
+            let report = cad_tess::tessellate_scene(&mut scene, &quality);
             triangles = report.triangles;
         }
         println!(
