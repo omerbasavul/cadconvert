@@ -228,6 +228,12 @@ fn orient_shell(faces: &mut [(usize, FaceId, Result<face::Patch, String>)]) -> (
             members.iter().enumerate().map(|(n, i)| (*i, n)).collect();
         // For each shared edge, whether the two faces already agree.
         let mut agree: Vec<Vec<(usize, bool)>> = vec![Vec::new(); members.len()];
+        // Grown into, not reserved. Sizing this from the triangle count was
+        // meant to save the final doubling — twenty megabytes by the audit's
+        // arithmetic — and cost a hundred and twenty: a hash map rounds a
+        // reservation up to a power of two and takes it in one contiguous
+        // piece, where growing reuses what the reader has already freed. The
+        // tessellation stage went 279 MB to 354 and back.
         let mut seen: rustc_hash::FxHashMap<(u64, u64), (bool, usize)> = Default::default();
         for &i in members {
             let Ok(patch) = &faces[i].2 else { continue };
@@ -273,7 +279,12 @@ fn orient_shell(faces: &mut [(usize, FaceId, Result<face::Patch, String>)]) -> (
             let mut group = vec![start];
             while let Some(n) = queue.pop_front() {
                 let here = colour[n].unwrap_or(false);
-                for (m, ok) in agree[n].clone() {
+                // By index rather than by clone. This is the inner loop of a
+                // breadth-first walk over every face of a shell, and cloning
+                // the adjacency list on each visit allocates once per face for
+                // nothing.
+                for k in 0..agree[n].len() {
+                    let (m, ok) = agree[n][k];
                     let want = here != !ok;
                     match colour[m] {
                         None => {
@@ -379,6 +390,7 @@ fn stitch_t_junctions(
     };
 
     // Every undirected edge, how often it is used, and one place it is used.
+    // Grown into. See the note beside `seen` in `orient_shell`.
     let mut uses: rustc_hash::FxHashMap<(u64, u64), (usize, usize, usize)> = Default::default();
     for (i, (_, _, result)) in faces.iter().enumerate() {
         let Ok(patch) = result else { continue };
