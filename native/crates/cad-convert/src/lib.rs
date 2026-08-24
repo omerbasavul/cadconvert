@@ -280,7 +280,11 @@ pub fn read(input: &Path, options: &Options) -> Result<cad_ir::Scene> {
                     // before the parse keeps one copy rather than two.
                     let text = String::from_utf8_lossy(&bytes).into_owned();
                     drop(bytes);
-                    if let Ok(hints) = xt_parser::appearance::appearance_hints(&text) {
+                    // By value: the STEP's own 36 MB buffer is resident for
+                    // the whole of this, and holding the twin's text as well
+                    // put the STEP read peak at 176 MB where the STEP alone is
+                    // 80.
+                    if let Ok(hints) = xt_parser::appearance::appearance_hints_owned(text) {
                         opts.materials.reflectivity_by_colour = hints.reflectivity_by_colour();
                     }
                 }

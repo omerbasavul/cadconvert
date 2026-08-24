@@ -338,7 +338,14 @@ pub fn parse_entities_keeping(
     // The stream is one token per field and a token averages a dozen bytes, so
     // the length of the body is the estimate. Being wrong costs a realloc,
     // which is what would have happened anyway.
-    let mut entities = Entities::with_capacity(input.len() / 70, input.len() / 12);
+    // Sized from the text when everything is kept, and barely at all when a
+    // filter is in play: the appearance walk keeps four kinds of entity out of
+    // half a million, and reserving the whole file's worth for it was 46 MB
+    // asked for and never used.
+    let mut entities = match keep {
+        None => Entities::with_capacity(input.len() / 70, input.len() / 12),
+        Some(_) => Entities::default(),
+    };
     // Reused for every entity; see `read_entity_fields`.
     let (mut scratch, mut scratch_extra) = (Vec::new(), Vec::new());
     // How many were read, which stops being the same as how many were kept the

@@ -56,11 +56,30 @@ impl AppearanceHints {
     }
 }
 
+/// Extract appearance hints, giving up the text as soon as nothing needs it.
+///
+/// The caller's copy is a second 36 MB of the file for the length of the walk,
+/// and on the STEP path the STEP's own buffer is resident beside it.
+pub fn appearance_hints_owned(text: String) -> Result<AppearanceHints> {
+    let (tline, header_len) = {
+        let (header_text, body_text) = crate::header::split_header(&text)?;
+        let _ = crate::header::parse_header(header_text)?;
+        (crate::schema::parse_tline(body_text)?, header_text.len())
+    };
+    let _ = header_len;
+    drop(text);
+    hints_from_tline(tline)
+}
+
 /// Extract appearance hints from XT file text.
 pub fn appearance_hints(text: &str) -> Result<AppearanceHints> {
     let (header_text, body_text) = crate::header::split_header(text)?;
     let _ = crate::header::parse_header(header_text)?;
     let tline = crate::schema::parse_tline(body_text)?;
+    hints_from_tline(tline)
+}
+
+fn hints_from_tline(tline: crate::schema::TLine) -> Result<AppearanceHints> {
     let mut input = tline.body.as_str();
     let partition_count = if tline.has_base_schema {
         crate::schema::parse_schema_preamble(&mut input)
