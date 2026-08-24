@@ -33,19 +33,40 @@ const ELEMENT_ARRAY_BUFFER: u32 = 34963;
 /// Write a scene as a `.glb` file.
 pub fn write_file<P: AsRef<Path>>(scene: &Scene, options: &Options, path: P) -> Result<u64> {
     let path = path.as_ref();
-    let bytes = write_bytes(scene, options)?;
-    std::fs::write(path, &bytes).map_err(|source| ExportError::Io {
+    let mut b = Builder::new(scene, options);
+    b.build()?;
+
+    // Straight to the file. Assembling the container in memory first means
+    // holding the binary chunk and a copy of it inside the finished file at
+    // the same moment, which on the pilot is 40 MB twice — and since the
+    // reader's own peak came down, that is where the whole conversion now
+    // peaks.
+    let file = std::fs::File::create(path).map_err(|source| ExportError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    Ok(bytes.len() as u64)
+    let mut out = std::io::BufWriter::new(file);
+    let written = b.finish_into(&mut out).map_err(|e| match e {
+        ExportError::RawIo(source) => ExportError::Io {
+            path: path.to_path_buf(),
+            source,
+        },
+        other => other,
+    })?;
+    out.flush().map_err(|source| ExportError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(written)
 }
 
 /// Serialise a scene into GLB bytes.
 pub fn write_bytes(scene: &Scene, options: &Options) -> Result<Vec<u8>> {
     let mut b = Builder::new(scene, options);
     b.build()?;
-    b.finish()
+    let mut out = Vec::with_capacity(b.size_hint());
+    b.finish_into(&mut out)?;
+    Ok(out)
 }
 
 /// Accumulates the JSON document and the binary chunk side by side.
@@ -579,7 +600,16 @@ impl<'a> Builder<'a> {
     }
 
     /// Assemble the JSON and binary chunks into a GLB container.
-    fn finish(self) -> Result<Vec<u8>> {
+    /// Roughly how big the file will be, for a caller that wants it in memory.
+    ///
+    /// The binary chunk is all of it bar the JSON, and the JSON is small next
+    /// to a mesh. Being a little under costs one growth; being over costs
+    /// nothing that is not returned.
+    fn size_hint(&self) -> usize {
+        self.bin.len() + (1 << 20)
+    }
+
+    fn finish_into<W: Write>(self, out: &mut W) -> Result<u64> {
         let Builder {
             scene,
             options,
@@ -670,31 +700,39 @@ impl<'a> Builder<'a> {
         let json_bytes = serde_json::to_vec(&Value::Object(root))
             .map_err(|e| ExportError::BadMesh(format!("serialising glTF JSON: {e}")))?;
 
-        let mut out = Vec::with_capacity(json_bytes.len() + bin.len() + 64);
-        // The header's total length is written once both chunks are sized.
-        out.write_all(b"glTF")?;
-        out.write_all(&2u32.to_le_bytes())?;
-        out.write_all(&0u32.to_le_bytes())?;
-
-        write_chunk(&mut out, b"JSON", &json_bytes, b' ')?;
+        // The total is worked out rather than measured after the fact,
+        // because nothing here can go back and patch a header it has already
+        // handed to a file.
+        let mut total = 12 + 8 + pad4(json_bytes.len());
         if !bin.is_empty() {
-            write_chunk(&mut out, b"BIN\0", &bin, 0)?;
+            total += 8 + pad4(bin.len());
         }
 
-        let total = out.len() as u32;
-        out[8..12].copy_from_slice(&total.to_le_bytes());
-        Ok(out)
+        out.write_all(b"glTF")?;
+        out.write_all(&2u32.to_le_bytes())?;
+        out.write_all(&(total as u32).to_le_bytes())?;
+
+        write_chunk(out, b"JSON", &json_bytes, b' ')?;
+        if !bin.is_empty() {
+            write_chunk(out, b"BIN\0", &bin, 0)?;
+        }
+        Ok(total as u64)
     }
 }
 
 /// Write one GLB chunk, padded to a four-byte boundary with `pad`.
-fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8], pad: u8) -> Result<()> {
+fn write_chunk<W: Write>(out: &mut W, kind: &[u8; 4], data: &[u8], pad: u8) -> Result<()> {
     let padding = (4 - data.len() % 4) % 4;
     out.write_all(&((data.len() + padding) as u32).to_le_bytes())?;
     out.write_all(kind)?;
     out.write_all(data)?;
-    out.extend(std::iter::repeat_n(pad, padding));
+    out.write_all(&[pad; 3][..padding])?;
     Ok(())
+}
+
+/// Four, rounded up. Every glTF chunk is padded to it.
+fn pad4(n: usize) -> usize {
+    (n + 3) & !3
 }
 
 /// One piece of a material run: the vertices it uses, in the order it first
