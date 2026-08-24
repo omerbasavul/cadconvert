@@ -204,8 +204,36 @@ pub fn parse_entities_opt(
     inline_schemas: bool,
     key_major: u32,
 ) -> Result<(Vec<RawEntity>, Option<Truncation>)> {
+    parse_entities_keeping(input, partition_count, inline_schemas, key_major, None)
+}
+
+/// Like [`parse_entities_opt`], but keeps only the entity types asked for.
+///
+/// Every entity is still *read* — the stream has no index and the only way to
+/// reach the next entity is through the one before it — but an entity whose
+/// type is not wanted is dropped as soon as it has been read instead of being
+/// kept for the caller.
+///
+/// This is for a reader that wants a handful of facts out of a whole file. The
+/// appearance walk is the case it was written for: it needs four kinds of
+/// entity out of 476 877 to recover fourteen colour-to-finish lines, and
+/// keeping the rest cost 209 MB while the STEP file that asked for them was
+/// still resident.
+///
+/// `keep` is a sorted slice of type ids. `None` keeps everything.
+pub fn parse_entities_keeping(
+    input: &mut &str,
+    partition_count: usize,
+    inline_schemas: bool,
+    key_major: u32,
+    keep: Option<&[u16]>,
+) -> Result<(Vec<RawEntity>, Option<Truncation>)> {
     let mut schema_cache: HashMap<u16, InlineSchema> = HashMap::new();
     let mut entities: Vec<RawEntity> = Vec::new();
+    // How many were read, which stops being the same as how many were kept the
+    // moment a filter is in play. The truncation report is about the stream,
+    // so it counts what was read.
+    let mut read = 0usize;
     let mut truncated: Option<Truncation> = None;
 
     loop {
@@ -280,16 +308,19 @@ pub fn parse_entities_opt(
                 if std::env::var_os("XT_TRACE").is_some() {
                     eprintln!(
                         "[trace] #{} type={} idx={} fields={} next={:?}",
-                        entities.len(), entity.type_id, entity.index, entity.fields.len(),
+                        read, entity.type_id, entity.index, entity.fields.len(),
                         &input[..40.min(input.len())],
                     );
                 }
-                entities.push(entity)
+                read += 1;
+                if keep.is_none_or(|k| k.binary_search(&entity.type_id).is_ok()) {
+                    entities.push(entity)
+                }
             }
             Err(e) => {
                 truncated = Some(Truncation {
                     type_id,
-                    entities_read: entities.len(),
+                    entities_read: read,
                     detail: e.to_string(),
                 });
                 break;

@@ -72,13 +72,38 @@ pub fn appearance_hints(text: &str) -> Result<AppearanceHints> {
     } else {
         0
     };
+    // The four kinds of entity the walk below touches, and the value carriers
+    // an attribute's payload can sit in. Everything else is read and dropped:
+    // this recovers fourteen colour-to-finish lines out of 476 877 entities,
+    // and the STEP file that asked for them is still resident while it runs.
+    //
+    // Generous on the carriers on purpose. The walk takes whatever floats and
+    // characters it finds behind an attribute's pointers, so a carrier left
+    // out of this list would not fail — it would quietly return a different
+    // colour.
+    const KEEP: &[u16] = &[
+        crate::schema::BODY,
+        crate::schema::ATT_DEF_ID,
+        crate::schema::ATTRIB_DEF,
+        crate::schema::ATTRIBUTE,
+        crate::schema::INT_VALUES,
+        crate::schema::REAL_VALUES,
+        crate::schema::CHAR_VALUES,
+        crate::schema::POINT_VALUES,
+        crate::schema::VECTOR_VALUES,
+        crate::schema::AXIS_VALUES,
+        crate::schema::TAG_VALUES,
+        crate::schema::DIRECTION_VALUES,
+    ];
+
     // A truncated stream still yields whatever attributes were read before the
     // stop; hints are best-effort by nature.
-    let (entities, _truncated) = crate::entity::parse_entities_opt(
+    let (entities, _truncated) = crate::entity::parse_entities_keeping(
         &mut input,
         partition_count,
         tline.has_base_schema,
         tline.key_major,
+        Some(KEEP),
     )?;
     Ok(hints_from_entities(&entities))
 }
