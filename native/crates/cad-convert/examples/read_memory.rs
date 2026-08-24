@@ -112,9 +112,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let opts = cad_xt::LowerOptions {
                 materials: options.materials.clone(),
             };
-            let (scene, _) = cad_xt::scene_from_file(path, &opts)?;
+            let (mut scene, _) = cad_xt::scene_from_file(path, &opts)?;
             step("after parsing and lowering", &mut last);
             println!("  ({} bodies kept)", scene.geometry.len());
+
+            // Tessellation too, because the peak is here and not in the read,
+            // and because the question this instrument exists to answer is
+            // whether what the reader gave back can be used again.
+            let quality = cad_tess::Options::default();
+            let report = cad_tess::tessellate_scene(&mut scene, &quality);
+            step("after tessellating", &mut last);
+            let (mut used, mut taken) = (0usize, 0usize);
+            for g in &scene.geometry {
+                let Some(m) = g.mesh.as_ref() else { continue };
+                used += m.positions.len() * 12 + m.normals.len() * 12
+                    + m.uvs.len() * 8 + m.indices.len() * 4;
+                taken += m.positions.capacity() * 12 + m.normals.capacity() * 12
+                    + m.uvs.capacity() * 8 + m.indices.capacity() * 4;
+            }
+            println!(
+                "  ({} triangles; the meshes hold {:.0} MB and were given {:.0} MB)",
+                report.triangles,
+                used as f64 / 1e6,
+                taken as f64 / 1e6
+            );
             drop(scene);
             step("after dropping the scene", &mut last);
         }

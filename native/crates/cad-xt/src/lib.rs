@@ -68,8 +68,10 @@ pub fn scene_from_file<P: AsRef<std::path::Path>>(
     // down.
     let text = String::from_utf8_lossy(&bytes).into_owned();
     drop(bytes);
-    let mut scene = to_scene(&text, options)?;
-    drop(text);
+    // By value, so the parser can let it go the moment it has stripped a copy
+    // of its own. Lent instead, this and that copy are both live for the whole
+    // parse — 35 MB twice, at the point where the peak is.
+    let mut scene = to_scene_owned(text, options)?;
     scene.0.meta.source = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -79,7 +81,21 @@ pub fn scene_from_file<P: AsRef<std::path::Path>>(
 
 /// Lower XT text into a scene.
 pub fn to_scene(text: &str, options: &LowerOptions) -> Result<(Scene, Report), XtSceneError> {
-    let file = xt_parser::parse_raw(text)?;
+    to_scene_from(xt_parser::parse_raw(text)?, options)
+}
+
+/// Lower XT text into a scene, taking the text so it can be freed early.
+pub fn to_scene_owned(
+    text: String,
+    options: &LowerOptions,
+) -> Result<(Scene, Report), XtSceneError> {
+    to_scene_from(xt_parser::parse_raw_owned(text)?, options)
+}
+
+fn to_scene_from(
+    file: xt_parser::RawFile,
+    options: &LowerOptions,
+) -> Result<(Scene, Report), XtSceneError> {
     let mut report = Report {
         truncated: file.truncated.as_ref().map(|t| t.to_string()),
         ..Default::default()

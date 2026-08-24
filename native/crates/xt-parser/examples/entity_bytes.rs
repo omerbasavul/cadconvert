@@ -68,6 +68,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let total: usize = by_variant.values().sum();
+    // How many fields an entity has, which decides whether they can live in
+    // the struct instead of in half a million separate allocations.
+    let mut hist = std::collections::BTreeMap::<usize, usize>::new();
+    for e in &entities {
+        *hist.entry(e.fields.len()).or_default() += 1;
+    }
+    let n_e = entities.len();
+    let mut run = 0usize;
+    println!("  fields per entity:");
+    for (k, v) in &hist {
+        run += v;
+        if *k <= 12 || *v > n_e / 200 {
+            println!("    {k:>3} fields  {v:>8}  {:>5.1}%   cumulative {:>5.1}%",
+                100.0 * *v as f64 / n_e as f64, 100.0 * run as f64 / n_e as f64);
+        }
+    }
+    println!("    largest: {}", hist.keys().last().unwrap_or(&0));
     println!("  every field by variant:");
     for (name, n) in &by_variant {
         println!("    {name:<14} {n:>9}  {:>5.1}%", 100.0 * *n as f64 / total as f64);

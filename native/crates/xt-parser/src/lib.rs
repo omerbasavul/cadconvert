@@ -62,6 +62,23 @@ pub struct RawFile {
 }
 
 /// Parse an XT file to raw entities.
+/// Parse, and give up the text as soon as nothing needs it.
+///
+/// `parse_tline` strips the newlines into a string of its own, so from that
+/// point the caller's copy is a second 35 MB of the same file held for the
+/// length of the parse — and the parse is where the peak is. Owning it here
+/// lets it go.
+pub fn parse_raw_owned(text: String) -> Result<RawFile> {
+    let (header, tline) = {
+        let (header_text, body_text) = header::split_header(&text)?;
+        let header = header::parse_header(header_text)?;
+        reject_unsupported(&header, body_text)?;
+        (header, schema::parse_tline(body_text)?)
+    };
+    drop(text);
+    parse_from_tline(header, tline)
+}
+
 pub fn parse_raw(text: &str) -> Result<RawFile> {
     let (header_text, body_text) = header::split_header(text)?;
     let header = header::parse_header(header_text)?;
@@ -79,6 +96,25 @@ pub fn parse_raw(text: &str) -> Result<RawFile> {
     }
 
     let tline = schema::parse_tline(body_text)?;
+    parse_from_tline(header, tline)
+}
+
+fn reject_unsupported(header: &crate::types::XtHeader, body_text: &str) -> Result<()> {
+    if body_text.starts_with("PS") || body_text.starts_with("\x50\x53") {
+        return Err(XtError::UnsupportedEncoding(
+            "binary X_B format not supported".into(),
+        ));
+    }
+    if header.user_field_size != 0 {
+        return Err(XtError::UnsupportedEncoding(format!(
+            "USFLD_SIZE={} not supported (entity parser cannot skip user fields)",
+            header.user_field_size,
+        )));
+    }
+    Ok(())
+}
+
+fn parse_from_tline(header: crate::types::XtHeader, tline: schema::TLine) -> Result<RawFile> {
     let mut input = tline.body.as_str();
     let partition_count = if tline.has_base_schema {
         schema::parse_schema_preamble(&mut input)
