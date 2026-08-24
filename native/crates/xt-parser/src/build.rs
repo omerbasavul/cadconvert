@@ -349,11 +349,11 @@ fn build_bspline_surface(
     let u_kset_ptr = f.get(18)?.as_ptr();
     let v_kset_ptr = f.get(19)?.as_ptr();
 
-    let raw_verts = idx.get(&verts_ptr).map(|e| e.var_f64().to_vec()).unwrap_or_default();
-    let u_mults: Vec<i16> = idx.get(&u_kmult_ptr).map(|e| e.var_i16().to_vec()).unwrap_or_default();
-    let u_knot_vals: Vec<f64> = idx.get(&u_kset_ptr).map(|e| e.var_f64().to_vec()).unwrap_or_default();
-    let v_mults: Vec<i16> = idx.get(&v_kmult_ptr).map(|e| e.var_i16().to_vec()).unwrap_or_default();
-    let v_knot_vals: Vec<f64> = idx.get(&v_kset_ptr).map(|e| e.var_f64().to_vec()).unwrap_or_default();
+    let raw_verts = idx.get(&verts_ptr).map(|e| entities.var_f64(e).to_vec()).unwrap_or_default();
+    let u_mults: Vec<i16> = idx.get(&u_kmult_ptr).map(|e| entities.var_i16(e).to_vec()).unwrap_or_default();
+    let u_knot_vals: Vec<f64> = idx.get(&u_kset_ptr).map(|e| entities.var_f64(e).to_vec()).unwrap_or_default();
+    let v_mults: Vec<i16> = idx.get(&v_kmult_ptr).map(|e| entities.var_i16(e).to_vec()).unwrap_or_default();
+    let v_knot_vals: Vec<f64> = idx.get(&v_kset_ptr).map(|e| entities.var_f64(e).to_vec()).unwrap_or_default();
 
     let u_knots = expand_knots(&u_knot_vals, &u_mults);
     let v_knots = expand_knots(&v_knot_vals, &v_mults);
@@ -437,7 +437,7 @@ fn build_curve(
             // surf2 is not available (discarded by P2 collapsing)
             let chart_ptr = f.get(8)?.as_ptr();
             let approx = if let Some(chart) = idx.get(&chart_ptr) {
-                chart_to_points(chart.var_f64())
+                chart_to_points(entities.var_f64(chart))
             } else {
                 Vec::new()
             };
@@ -504,9 +504,9 @@ fn build_bspline_curve(
     let kmult_ptr = f.get(10)?.as_ptr();
     let kset_ptr = f.get(11)?.as_ptr();
 
-    let raw_verts = idx.get(&verts_ptr).map(|e| e.var_f64().to_vec()).unwrap_or_default();
-    let mults: Vec<i16> = idx.get(&kmult_ptr).map(|e| e.var_i16().to_vec()).unwrap_or_default();
-    let knot_vals: Vec<f64> = idx.get(&kset_ptr).map(|e| e.var_f64().to_vec()).unwrap_or_default();
+    let raw_verts = idx.get(&verts_ptr).map(|e| entities.var_f64(e).to_vec()).unwrap_or_default();
+    let mults: Vec<i16> = idx.get(&kmult_ptr).map(|e| entities.var_i16(e).to_vec()).unwrap_or_default();
+    let knot_vals: Vec<f64> = idx.get(&kset_ptr).map(|e| entities.var_f64(e).to_vec()).unwrap_or_default();
 
     let knots = expand_knots(&knot_vals, &mults);
     let (poles, weights) = reshape_poles(&raw_verts, n_verts, vert_dim, rational);

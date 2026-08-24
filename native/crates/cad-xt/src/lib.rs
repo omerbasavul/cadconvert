@@ -58,16 +58,16 @@ pub fn scene_from_file<P: AsRef<std::path::Path>>(
         path: path.to_path_buf(),
         source,
     })?;
-    // The header is not UTF-8 clean (machine-locale dates); the entity stream
-    // is pure ASCII, so lossy decoding cannot touch geometry.
+    // The header is not UTF-8 clean on every file (machine-locale dates); the
+    // entity stream is pure ASCII, so a replacement character cannot touch
+    // geometry.
     //
-    // Owned, and the bytes dropped before the parse. These files are usually
-    // *not* valid UTF-8, so the lossy conversion allocates a second full copy;
-    // holding both across the parse costs a second time the file's size, and
-    // on the pilot that is 36 MB of a figure this crate is trying to bring
-    // down.
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    drop(bytes);
+    // By value: `decode` takes the bytes rather than borrowing them, so a
+    // clean file becomes a string without a copy and a dirty one is converted
+    // into a buffer sized in advance. `String::from_utf8_lossy(&bytes)` here
+    // held the bytes and a doubling string at once, and cost 72 MB on a 35 MB
+    // file.
+    let text = xt_parser::decode(bytes);
     // By value, so the parser can let it go the moment it has stripped a copy
     // of its own. Lent instead, this and that copy are both live for the whole
     // parse — 35 MB twice, at the point where the peak is.
@@ -372,7 +372,7 @@ fn per_face_appearance(
     for e in entities.iter().filter(|e| e.type_id == 80) {
         let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = index.get(&ident) {
-            def_names.insert(e.index, id_e.var_char().iter().collect());
+            def_names.insert(e.index, entities.var_char(id_e).iter().collect());
         }
     }
 
@@ -385,9 +385,9 @@ fn per_face_appearance(
             continue;
         };
         let mut floats: Vec<f64> = Vec::new();
-        for &v in e.var_ptr() {
+        for &v in entities.var_ptr(e) {
             if let Some(ve) = index.get(&v) {
-                floats.extend_from_slice(ve.var_f64());
+                floats.extend_from_slice(entities.var_f64(ve));
             }
         }
         match def_name.as_str() {

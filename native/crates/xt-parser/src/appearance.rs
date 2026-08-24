@@ -136,7 +136,7 @@ pub fn hints_from_entities(entities: &Entities) -> AppearanceHints {
     for e in entities.iter().filter(|e| e.type_id == 80) {
         let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = by_index.get(&ident) {
-            def_names.insert(e.index, id_e.var_char().iter().collect());
+            def_names.insert(e.index, entities.var_char(id_e).iter().collect());
         }
     }
 
@@ -154,10 +154,10 @@ pub fn hints_from_entities(entities: &Entities) -> AppearanceHints {
         // Gather this attribute's payload from its value entities.
         let mut floats: Vec<f64> = Vec::new();
         let mut chars = String::new();
-        for &v in e.var_ptr() {
+        for &v in entities.var_ptr(e) {
             if let Some(ve) = by_index.get(&v) {
-                floats.extend_from_slice(ve.var_f64());
-                chars.extend(ve.var_char().iter());
+                floats.extend_from_slice(entities.var_f64(ve));
+                chars.extend(entities.var_char(ve).iter());
             }
         }
 

@@ -61,25 +61,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t = type_of(p).map(|t| format!("→{t}")).unwrap_or_default();
             print!("[{i}]={p}{t} ");
         }
-        println!("  var_ptr={:?}", &e.var_ptr()[..e.var_ptr().len().min(6)]);
+        println!("  var_ptr={:?}", &file.entities.var_ptr(e)[..file.entities.var_ptr(e).len().min(6)]);
     }
 
     // 3. CHART (40): fixed fields + var lengths.
     println!("\n-- CHART (40) shape --");
     let mut lens: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for e in file.entities.iter().filter(|e| e.type_id == 40) {
-        *lens.entry((file.entities.fields(e).len(), e.var_f64().len().min(50) / 10 * 10)).or_default() += 1;
+        *lens.entry((file.entities.fields(e).len(), file.entities.var_f64(e).len().min(50) / 10 * 10)).or_default() += 1;
     }
     for ((nf, nv), n) in lens.iter().take(8) {
         println!("  {n:>6}  fixed={nf} var_f64≈{nv}");
     }
-    if let Some(e) = file.entities.iter().find(|e| e.type_id == 40 && !e.var_f64().is_empty()) {
+    if let Some(e) = file.entities.iter().find(|e| e.type_id == 40 && !file.entities.var_f64(e).is_empty()) {
         println!(
             "  sample #{}: fields={} var_f64.len={} first 8: {:?}",
             e.index,
             file.entities.fields(e).len(),
-            e.var_f64().len(),
-            &e.var_f64()[..e.var_f64().len().min(8)]
+            file.entities.var_f64(e).len(),
+            &file.entities.var_f64(e)[..file.entities.var_f64(e).len().min(8)]
         );
         print!("  fixed: ");
         for (i, f) in file.entities.fields(e).iter().enumerate() {
@@ -285,15 +285,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for e in file.entities.iter().filter(|e| e.type_id == 40) {
             let fixed = file.entities.fields(e).get(6).map(|f| f.as_vec3()).unwrap_or([0.0; 3]);
             let far_fixed = fixed.iter().any(|v| v.abs() > 100.0);
-            let far_var = e.var_f64().iter().any(|v| v.abs() > 100.0);
+            let far_var = file.entities.var_f64(e).iter().any(|v| v.abs() > 100.0);
             if (far_fixed || far_var) && shown < 3 {
                 shown += 1;
                 println!("\n-- far CHART #{} fixed[6]={fixed:?} --", e.index);
                 for (i, f) in file.entities.fields(e).iter().enumerate() {
                     println!("  [{i}]={f:?}");
                 }
-                println!("  var_f64[{}] first 12: {:?}", e.var_f64().len(),
-                         &e.var_f64()[..e.var_f64().len().min(12)]);
+                println!("  var_f64[{}] first 12: {:?}", file.entities.var_f64(e).len(),
+                         &file.entities.var_f64(e)[..file.entities.var_f64(e).len().min(12)]);
             }
         }
         if shown == 0 {
@@ -326,7 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(n) = index.get(&inner) {
                             let vp = file.entities.fields(n).get(9).map(|f| f.as_ptr()).unwrap_or(0);
                             if let Some(v) = index.get(&vp) {
-                                println!("  2D poles first 8: {:?}", &v.var_f64()[..v.var_f64().len().min(8)]);
+                                println!("  2D poles first 8: {:?}", &file.entities.var_f64(v)[..file.entities.var_f64(v).len().min(8)]);
                             }
                         }
                     }

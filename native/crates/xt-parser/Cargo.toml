@@ -10,3 +10,4 @@ winnow.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+mimalloc.workspace = true

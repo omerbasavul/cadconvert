@@ -132,7 +132,8 @@ pub struct RawEntity {
     /// the pilot, 55 % of entities have no tail at all and the five sit empty;
     /// behind one box the struct falls from 184 bytes to 72 and the allocation
     /// count with it.
-    pub var: Option<Box<VarTail>>,
+    var: Span,
+    var_kind: VarKind,
     /// The elements of fixed arrays past the first, in the order they were
     /// read. A field written as two pointers — an intersection curve's two
     /// surfaces — occupies one slot in `fields`, and the second pointer would
@@ -167,6 +168,17 @@ impl Span {
 pub struct Entities {
     items: Vec<RawEntity>,
     arena: Vec<FieldVal>,
+    /// The variable-length tails, one array per element type.
+    ///
+    /// Same argument as the field arena above, and a larger count: 213 166 of
+    /// the pilot's entities carry a tail, and each was a `Vec` inside a `Box`
+    /// — 426 332 allocations holding 6.5 MB between them. An entity now names
+    /// a run in one of these five.
+    f64s: Vec<f64>,
+    i16s: Vec<i16>,
+    i64s: Vec<i64>,
+    ptrs: Vec<usize>,
+    chars: Vec<char>,
 }
 
 impl Entities {
@@ -174,6 +186,7 @@ impl Entities {
         Entities {
             items: Vec::with_capacity(entities),
             arena: Vec::with_capacity(fields),
+            ..Default::default()
         }
     }
 
@@ -199,12 +212,87 @@ impl Entities {
         self.arena.len()
     }
 
-    fn push(&mut self, mut entity: RawEntity, fields: &[FieldVal], extra: &[FieldVal]) {
+    /// How many elements sit in the five tail arrays between them.
+    pub fn tail_len(&self) -> usize {
+        self.f64s.len() + self.i16s.len() + self.i64s.len() + self.ptrs.len() + self.chars.len()
+    }
+
+    /// Read-only views of one entity's tail. Empty where the entity has none,
+    /// which is most of them, and empty where it has one of another type —
+    /// exactly what the five methods on `RawEntity` did before the tails moved
+    /// into these arrays.
+    pub fn var_f64(&self, e: &RawEntity) -> &[f64] {
+        match e.var_kind {
+            VarKind::F64 => &self.f64s[e.var.range()],
+            _ => &[],
+        }
+    }
+    pub fn var_i16(&self, e: &RawEntity) -> &[i16] {
+        match e.var_kind {
+            VarKind::I16 => &self.i16s[e.var.range()],
+            _ => &[],
+        }
+    }
+    pub fn var_i32(&self, e: &RawEntity) -> &[i64] {
+        match e.var_kind {
+            VarKind::I32 => &self.i64s[e.var.range()],
+            _ => &[],
+        }
+    }
+    pub fn var_ptr(&self, e: &RawEntity) -> &[usize] {
+        match e.var_kind {
+            VarKind::Ptr => &self.ptrs[e.var.range()],
+            _ => &[],
+        }
+    }
+    pub fn var_char(&self, e: &RawEntity) -> &[char] {
+        match e.var_kind {
+            VarKind::Char => &self.chars[e.var.range()],
+            _ => &[],
+        }
+    }
+
+    fn push(&mut self, mut entity: RawEntity, fields: &[FieldVal], extra: &[FieldVal], tail: &Tail) {
         entity.fields = Span::of(self.arena.len(), fields.len());
         self.arena.extend_from_slice(fields);
         entity.extra = Span::of(self.arena.len(), extra.len());
         self.arena.extend_from_slice(extra);
+        entity.var_kind = tail.kind;
+        entity.var = match tail.kind {
+            VarKind::None => Span::default(),
+            VarKind::F64 => {
+                let s = Span::of(self.f64s.len(), tail.f64s.len());
+                self.f64s.extend_from_slice(&tail.f64s);
+                s
+            }
+            VarKind::I16 => {
+                let s = Span::of(self.i16s.len(), tail.i16s.len());
+                self.i16s.extend_from_slice(&tail.i16s);
+                s
+            }
+            VarKind::I32 => {
+                let s = Span::of(self.i64s.len(), tail.i64s.len());
+                self.i64s.extend_from_slice(&tail.i64s);
+                s
+            }
+            VarKind::Ptr => {
+                let s = Span::of(self.ptrs.len(), tail.ptrs.len());
+                self.ptrs.extend_from_slice(&tail.ptrs);
+                s
+            }
+            VarKind::Char => {
+                let s = Span::of(self.chars.len(), tail.chars.len());
+                self.chars.extend_from_slice(&tail.chars);
+                s
+            }
+        };
         self.items.push(entity);
+    }
+}
+
+impl Span {
+    fn range(self) -> std::ops::Range<usize> {
+        self.start as usize..self.start as usize + self.len as usize
     }
 }
 
@@ -215,55 +303,44 @@ impl std::ops::Deref for Entities {
     }
 }
 
-/// The variable-length tail of one entity. See [`RawEntity::var`].
+/// Which of [`Entities`]'s five tail arrays an entity's tail is in.
 ///
-/// One of them, not five. The schema names a single `var_type` and the reader
-/// matches it once, so exactly one arm ever runs — and a struct of five `Vec`s
-/// carried four empty headers for every tail there was. On the pilot that is
-/// 213 166 tails and **852 664 empty headers, 20.5 MB of nothing**.
-#[derive(Debug, Clone)]
-pub enum VarTail {
-    F64(Vec<f64>),
-    I16(Vec<i16>),
+/// One byte beside the span, where a `Box<VarTail>` was a pointer and an
+/// allocation. The schema names a single `var_type` and the reader matches it
+/// once, so an entity has a tail of exactly one type or none at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VarKind {
+    #[default]
+    None,
+    F64,
+    I16,
     /// `i64`, not `i32`: the reader widens on the way in and `var_i32` hands
     /// back `&[i64]`.
-    I32(Vec<i64>),
-    Ptr(Vec<usize>),
-    Char(Vec<char>),
+    I32,
+    Ptr,
+    Char,
 }
 
-impl RawEntity {
-    /// Read-only views of the tails. Empty where the entity has none, which is
-    /// most of them, and without allocating to say so.
-    pub fn var_f64(&self) -> &[f64] {
-        match self.var.as_deref() {
-            Some(VarTail::F64(v)) => v,
-            _ => &[],
-        }
-    }
-    pub fn var_i16(&self) -> &[i16] {
-        match self.var.as_deref() {
-            Some(VarTail::I16(v)) => v,
-            _ => &[],
-        }
-    }
-    pub fn var_i32(&self) -> &[i64] {
-        match self.var.as_deref() {
-            Some(VarTail::I32(v)) => v,
-            _ => &[],
-        }
-    }
-    pub fn var_ptr(&self) -> &[usize] {
-        match self.var.as_deref() {
-            Some(VarTail::Ptr(v)) => v,
-            _ => &[],
-        }
-    }
-    pub fn var_char(&self) -> &[char] {
-        match self.var.as_deref() {
-            Some(VarTail::Char(v)) => v,
-            _ => &[],
-        }
+/// One entity's tail while it is being read, before it is copied into the
+/// arrays. Reused for every entity, like the field scratch beside it.
+#[derive(Debug, Default)]
+struct Tail {
+    kind: VarKind,
+    f64s: Vec<f64>,
+    i16s: Vec<i16>,
+    i64s: Vec<i64>,
+    ptrs: Vec<usize>,
+    chars: Vec<char>,
+}
+
+impl Tail {
+    fn clear(&mut self) {
+        self.kind = VarKind::None;
+        self.f64s.clear();
+        self.i16s.clear();
+        self.i64s.clear();
+        self.ptrs.clear();
+        self.chars.clear();
     }
 }
 
@@ -348,6 +425,7 @@ pub fn parse_entities_keeping(
     };
     // Reused for every entity; see `read_entity_fields`.
     let (mut scratch, mut scratch_extra) = (Vec::new(), Vec::new());
+    let mut tail = Tail::default();
     // How many were read, which stops being the same as how many were kept the
     // moment a filter is in play. The truncation report is about the stream,
     // so it counts what was read.
@@ -422,6 +500,7 @@ pub fn parse_entities_keeping(
                 &schema,
                 &mut scratch,
                 &mut scratch_extra,
+                &mut tail,
             )?;
             for _ in 0..partition_count {
                 let _ = read_int32(input)?;
@@ -440,7 +519,7 @@ pub fn parse_entities_keeping(
                 }
                 read += 1;
                 if keep.is_none_or(|k| k.binary_search(&entity.type_id).is_ok()) {
-                    entities.push(entity, &scratch, &scratch_extra);
+                    entities.push(entity, &scratch, &scratch_extra, &tail);
                 }
             }
             Err(e) => {
@@ -691,15 +770,18 @@ fn read_entity_fields(
     schema: &InlineSchema,
     fields: &mut Vec<FieldVal>,
     extra: &mut Vec<FieldVal>,
+    tail: &mut Tail,
 ) -> Result<RawEntity> {
     fields.clear();
     extra.clear();
+    tail.clear();
     fields.reserve(schema.fields.len());
     let mut entity = RawEntity {
         type_id,
         index,
         fields: Span::default(),
-        var: None,
+        var: Span::default(),
+        var_kind: VarKind::None,
         extra: Span::default(),
     };
 
@@ -731,61 +813,60 @@ fn read_entity_fields(
         // `tail()`-inside-the-loop shape did by accident and this does on
         // purpose.
         if count > 0 {
-            entity.var = match schema.var_type {
+            match schema.var_type {
                 Some(VarType::F64) => {
-                    let mut v = Vec::with_capacity(count);
+                    tail.kind = VarKind::F64;
+                    tail.f64s.reserve(count);
                     for _ in 0..count {
-                        v.push(read_f64(input)?);
+                        tail.f64s.push(read_f64(input)?);
                     }
-                    Some(Box::new(VarTail::F64(v)))
                 }
                 Some(VarType::I16) => {
-                    let mut v = Vec::with_capacity(count);
+                    tail.kind = VarKind::I16;
+                    tail.i16s.reserve(count);
                     for _ in 0..count {
-                        v.push(read_int16(input)?);
+                        tail.i16s.push(read_int16(input)?);
                     }
-                    Some(Box::new(VarTail::I16(v)))
                 }
                 Some(VarType::I32) => {
-                    let mut v = Vec::with_capacity(count);
+                    tail.kind = VarKind::I32;
+                    tail.i64s.reserve(count);
                     for _ in 0..count {
-                        v.push(read_int32(input)? as i64);
+                        tail.i64s.push(read_int32(input)? as i64);
                     }
-                    Some(Box::new(VarTail::I32(v)))
                 }
                 Some(VarType::Ptr) => {
-                    let mut v = Vec::with_capacity(count);
+                    tail.kind = VarKind::Ptr;
+                    tail.ptrs.reserve(count);
                     for _ in 0..count {
-                        v.push(read_int32(input)? as usize);
+                        tail.ptrs.push(read_int32(input)? as usize);
                     }
-                    Some(Box::new(VarTail::Ptr(v)))
                 }
                 Some(VarType::Char) | Some(VarType::RawChar) => {
-                    let mut v = Vec::with_capacity(count);
+                    tail.kind = VarKind::Char;
+                    tail.chars.reserve(count);
                     for _ in 0..count {
-                        v.push(read_raw_byte(input)?);
+                        tail.chars.push(read_raw_byte(input)?);
                     }
-                    Some(Box::new(VarTail::Char(v)))
                 }
-                // Three doubles an element, into the same tail the F64 arm
-                // fills: a variant of its own would hide every CHART, LIMIT
-                // and HULL point from `var_f64`.
+                // Three doubles an element, into the same array the F64 arm
+                // fills: a kind of its own would hide every CHART, LIMIT and
+                // HULL point from `var_f64`.
                 Some(VarType::V3) => {
-                    let mut v = Vec::with_capacity(count * 3);
+                    tail.kind = VarKind::F64;
+                    tail.f64s.reserve(count * 3);
                     for _ in 0..count {
-                        v.push(read_f64(input)?);
-                        v.push(read_f64(input)?);
-                        v.push(read_f64(input)?);
+                        tail.f64s.push(read_f64(input)?);
+                        tail.f64s.push(read_f64(input)?);
+                        tail.f64s.push(read_f64(input)?);
                     }
-                    Some(Box::new(VarTail::F64(v)))
                 }
                 None => {
                     for _ in 0..count {
                         let _ = read_int32(input)?;
                     }
-                    None
                 }
-            };
+            }
         }
     }
 

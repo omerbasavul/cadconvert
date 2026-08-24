@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for e in entities.iter().filter(|e| e.type_id == 80) {
         let ident = entities.fields(e).get(1).map(|f| f.as_ptr()).unwrap_or(0);
         if let Some(id_e) = by_index.get(&ident) {
-            let name: String = id_e.var_char().iter().collect();
+            let name: String = entities.var_char(id_e).iter().collect();
             def_names.insert(e.index, name);
         }
     }
@@ -81,10 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Value entities hang off the attribute's pointer array.
         let mut floats: Vec<f64> = Vec::new();
         let mut chars: String = String::new();
-        for &v in e.var_ptr() {
+        for &v in entities.var_ptr(e) {
             if let Some(ve) = by_index.get(&(v as usize)) {
-                floats.extend_from_slice(ve.var_f64());
-                chars.extend(ve.var_char().iter());
+                floats.extend_from_slice(entities.var_f64(ve));
+                chars.extend(entities.var_char(ve).iter());
             }
         }
         if def_name.contains("COLOUR") && floats.len() >= 3 {

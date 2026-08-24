@@ -34,6 +34,7 @@ cad-tess = { path = "crates/cad-tess" }
 cad-export = { path = "crates/cad-export" }
 cad-convert = { path = "crates/cad-convert" }
 cad-xt = { path = "crates/cad-xt" }
+cad-alloc = { path = "crates/cad-alloc" }
 
 [profile.release]
 opt-level = 3

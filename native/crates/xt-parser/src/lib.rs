@@ -63,6 +63,36 @@ pub struct RawFile {
     pub truncated: Option<entity::Truncation>,
 }
 
+/// A file's bytes as text, in one allocation where the bytes allow it.
+///
+/// `String::from_utf8_lossy(&bytes).into_owned()` is the obvious spelling and
+/// it costs twice: the original bytes stay live, and the string it builds
+/// grows by doubling. Measured on the pilot — a 35 MB file — that step alone
+/// moved the process 72 MB, because a 35 MB string that doubles its way there
+/// has touched 64 MB of pages by the time it arrives.
+///
+/// Here the bytes are handed over instead. A transmit file's entity stream is
+/// pure ASCII; only the header carries machine-locale bytes, and most files
+/// are clean throughout — those move into the string without a copy at all.
+/// A file that is not gets a conversion sized in advance from the length in
+/// hand, which is exact for every replacement-free stretch and never doubles.
+pub fn decode(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => {
+            let bytes = e.into_bytes();
+            let mut text = String::with_capacity(bytes.len());
+            for chunk in bytes.utf8_chunks() {
+                text.push_str(chunk.valid());
+                if !chunk.invalid().is_empty() {
+                    text.push(char::REPLACEMENT_CHARACTER);
+                }
+            }
+            text
+        }
+    }
+}
+
 /// Parse an XT file to raw entities.
 /// Parse, and give up the text as soon as nothing needs it.
 ///

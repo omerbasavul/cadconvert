@@ -1225,6 +1225,23 @@ pub fn tessellate_solid(
         );
     }
 
+    // The 10.1 MB of capacity left over here has been tried and left alone.
+    //
+    // The reservation above sums the patches; the mesh that comes out is
+    // smaller, because stitching merges the vertices two faces share and the
+    // seam pass drops facets a pole would draw twice — 1 442 102 patch
+    // vertices become 1 216 308, 7 309 428 patch indices become 6 131 796.
+    // `shrink_to_fit` on the four buffers does remove every byte of it, and
+    // measured against this same code without it, four interleaved runs each:
+    // the Parasolid went 260 -> 257 MB, inside the spread, and the STEP's
+    // readings got no better and possibly worse. The peak is reached during
+    // tessellation, where a shrink is a second copy of the buffer being
+    // shrunk, and it pays for the slack it removes.
+    //
+    // Reserving the final size instead is not available: it is not known
+    // until the stitching has run, and a pass to find it cost a quarter of
+    // the wall clock.
+
     (mesh, report)
 }
 

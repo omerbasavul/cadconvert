@@ -282,12 +282,12 @@ pub fn read(input: &Path, options: &Options) -> Result<cad_ir::Scene> {
                 if twin.exists()
                     && let Ok(bytes) = std::fs::read(&twin)
                 {
-                    // These files are not always valid UTF-8, so the lossy
-                    // conversion allocates a second full copy of a file that
-                    // is tens of megabytes. Owning it and dropping the bytes
-                    // before the parse keeps one copy rather than two.
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    drop(bytes);
+                    // The twin is tens of megabytes and is read for fourteen
+                    // colour-to-finish lines. `decode` takes the bytes by
+                    // value, so a clean file becomes the string it already is
+                    // and a dirty one is converted into a buffer sized in
+                    // advance rather than doubled into.
+                    let text = xt_parser::decode(bytes);
                     // By value: the STEP's own 36 MB buffer is resident for
                     // the whole of this, and holding the twin's text as well
                     // put the STEP read peak at 176 MB where the STEP alone is

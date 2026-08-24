@@ -1142,8 +1142,8 @@ fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
         && first.iter().all(|v| v.is_finite())
     {
         let first = Vec3::new(first[0], first[1], first[2]);
-        let rest: Vec<Vec3> = chart
-            .var_f64()
+        let rest: Vec<Vec3> = entities
+            .var_f64(chart)
             .chunks_exact(3)
             .map(|c| Vec3::new(c[0], c[1], c[2]))
             .collect();
@@ -1164,7 +1164,7 @@ fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
             eprintln!("[chart] #{} dropped a first point {:.1} m from the rest", chart.index, (first - rest[0]).length());
         }
     }
-    for c in chart.var_f64().chunks_exact(3) {
+    for c in entities.var_f64(chart).chunks_exact(3) {
         out.push(Vec3::new(c[0], c[1], c[2]));
     }
     if std::env::var_os("XT_CHART_STATS").is_some() && out.len() >= 3 {
@@ -1179,7 +1179,7 @@ fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
             "[chart] #{} {} fields, var_f64 {} values, first field 6 = {:?}, points: {:?}",
             chart.index,
             entities.fields(chart).len(),
-            chart.var_f64().len(),
+            entities.var_f64(chart).len(),
             entities.fields(chart).get(6),
             out.iter().map(|p| format!("({:.3},{:.3},{:.3})", p.x, p.y, p.z)).collect::<Vec<_>>()
         );
@@ -1224,7 +1224,7 @@ fn nurbs_curve(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Nurb
 
     let raw = index
         .get(&ptr(entities, e, 9))
-        .map(|v| v.var_f64())
+        .map(|v| entities.var_f64(v))
         .unwrap_or(&[]);
     let knots = expanded_knots(entities, e, 10, 11, index)?;
 
@@ -1256,7 +1256,7 @@ fn nurbs_curve2(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Nur
     let rational = entities.fields(e).get(7).map(|f| f.as_bool()).unwrap_or(false);
     let raw = index
         .get(&ptr(entities, e, 9))
-        .map(|v| v.var_f64())
+        .map(|v| entities.var_f64(v))
         .unwrap_or(&[]);
     let knots = expanded_knots(entities, e, 10, 11, index)?;
 
@@ -1307,7 +1307,7 @@ fn nurbs_surface(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Nu
 
     let raw = index
         .get(&ptr(entities, e, 15))
-        .map(|v| v.var_f64())
+        .map(|v| entities.var_f64(v))
         .unwrap_or(&[]);
     let u_knots = expanded_knots(entities, e, 16, 18, index)?;
     let v_knots = expanded_knots(entities, e, 17, 19, index)?;
@@ -1394,11 +1394,11 @@ fn expanded_knots(entities: &Entities,
 ) -> Result<Vec<f64>, String> {
     let mults = index
         .get(&ptr(entities, e, mult_field))
-        .map(|m| m.var_i16())
+        .map(|m| entities.var_i16(m))
         .unwrap_or(&[]);
     let knots = index
         .get(&ptr(entities, e, set_field))
-        .map(|k| k.var_f64())
+        .map(|k| entities.var_f64(k))
         .unwrap_or(&[]);
     if knots.is_empty() {
         return Err("knot set is empty".into());

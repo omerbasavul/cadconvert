@@ -18,6 +18,12 @@
 //! interleaved runs. Deterministic counts, `entity_bytes` and `scene_bytes`,
 //! are evidence; this is a map.
 
+// The allocator the converters run on. Measured under the system allocator
+// this map answers a question no shipped binary asks — and the two disagree:
+// 570 000 small allocations cost 40 MB there and nothing at all here.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn rss_mb() -> f64 {
     let pid = std::process::id();
     std::process::Command::new("ps")
@@ -70,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // these files are not always valid UTF-8.
             let bytes = std::fs::read(path)?;
             step("after reading the bytes", &mut last);
-            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = xt_parser::decode(bytes.clone());
             step("after making it a string", &mut last);
             {
                 let (header, body) = xt_parser::header::split_header(&text)?;

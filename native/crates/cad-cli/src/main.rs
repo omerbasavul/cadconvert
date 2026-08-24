@@ -18,8 +18,9 @@
 // Byte-identical output on both. The Parasolid path is where the small
 // allocations are, and it is the one that gains; on the STEP the memory is a
 // wash and only the clock moves. Nothing got worse on either.
+// The reasoning, the numbers, and the two options are in `cad-alloc`.
 #[global_allocator]
-static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOC: cad_alloc::MiMalloc = cad_alloc::MiMalloc;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

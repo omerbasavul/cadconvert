@@ -38,8 +38,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
-        let v = e.var_f64().len() + e.var_i16().len() + e.var_i32().len()
-            + e.var_ptr().len() + e.var_char().len();
+        let v = entities.var_f64(e).len() + entities.var_i16(e).len() + entities.var_i32(e).len()
+            + entities.var_ptr(e).len() + entities.var_char(e).len();
         var_items += v;
         if v > 0 { with_var += 1; }
     }

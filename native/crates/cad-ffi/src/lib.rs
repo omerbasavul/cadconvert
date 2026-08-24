@@ -21,7 +21,7 @@
 // P/Invoking into it. An `rlib` caller who disagrees turns the feature off.
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
-static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOC: cad_alloc::MiMalloc = cad_alloc::MiMalloc;
 
 use std::ffi::{CStr, CString, c_char};
 use std::panic::AssertUnwindSafe;

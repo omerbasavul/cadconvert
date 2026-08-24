@@ -1,0 +1,9 @@
+[package]
+name = "cad-alloc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The allocator the converter's binaries run on, and the two options it is tuned with"
+
+[dependencies]
+mimalloc.workspace = true
