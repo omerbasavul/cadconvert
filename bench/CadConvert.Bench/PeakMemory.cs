@@ -38,6 +38,25 @@ internal static class PeakMemory
         return 0;
     }
 
+    /// <summary>What this process is holding right now, in bytes.</summary>
+    /// <remarks>
+    /// The peak above only ever grows, so it cannot answer the question a
+    /// service actually asks — not "how much did one conversion cost" but
+    /// "is it given back before the next one". That needs the current
+    /// resident set, and <c>Process.WorkingSet64</c> is populated on all three
+    /// platforms. The managed heap is collected first so that what is left is
+    /// the native side, which is nearly all of it.
+    /// </remarks>
+    public static long CurrentBytes()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var self = Process.GetCurrentProcess();
+        self.Refresh();
+        return self.WorkingSet64;
+    }
+
     private const int RUSAGE_SELF = 0;
 
     [DllImport("libc", SetLastError = true)]

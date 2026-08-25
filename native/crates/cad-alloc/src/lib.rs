@@ -62,3 +62,19 @@ pub use mimalloc::MiMalloc;
 // file read 257 MB at 22 s and 209 MB at 31 s, the difference being nothing
 // but what else the machine was doing. Interleave the two binaries and take
 // medians, or the load will answer the question instead of the code.
+
+// A third attempt belongs with the two above, because it was the most
+// promising and it failed hardest. `mi_collect(true)` *between conversions* —
+// where, unlike between stages, nothing at all is live — was exported through
+// the C ABI for a host to call when a request finished. Measured in a .NET
+// process converting the STEP five times over, held memory between
+// conversions went from a median of 471 MB to 583, and stopped moving: the
+// collect walks every heap and brings the pages it visits back into the
+// working set faster than it gives any up. Peak went 537 -> 583 with it.
+//
+// So: the allocator returns memory on its own schedule and nothing this
+// program does from the inside changes that. What a host can rely on is that it
+// *does* come back — the same five conversions settle from 400 MB to 203
+// twenty seconds after the last, against 41 before the first — and that it
+// plateaus rather than climbing: eight conversions in one process gave 328,
+// 230, 260, 282, 272, 344, 253, 422 MB, a series with no trend in it.
