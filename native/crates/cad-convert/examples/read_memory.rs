@@ -70,6 +70,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop(scene);
             step("after dropping the scene", &mut last);
         }
+        Some(cad_convert::Format::Gltf) => {
+            // No lowering and no meshing: the file is the mesh, and the whole
+            // cost is holding it.
+            let scene = cad_convert::read(path, &options)?;
+            step("after reading the glTF", &mut last);
+            println!(
+                "  ({} bodies kept, {} triangles)",
+                scene.geometry.len(),
+                scene.stored_triangle_count()
+            );
+            drop(scene);
+            step("after dropping the scene", &mut last);
+        }
         Some(cad_convert::Format::ParasolidText) => {
             // The entity graph on its own, so the parse and the lowering can be
             // told apart. `String::from_utf8_lossy` is what the readers use:

@@ -52,14 +52,14 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "cad-alloc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mimalloc",
 ]
 
 [[package]]
 name = "cad-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-alloc",
  "cad-convert",
@@ -69,9 +69,10 @@ dependencies = [
 
 [[package]]
 name = "cad-convert"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-export",
+ "cad-gltf",
  "cad-ir",
  "cad-step",
  "cad-tess",
@@ -83,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "cad-export"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-ir",
  "gltf",
@@ -93,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "cad-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-alloc",
  "cad-convert",
@@ -101,15 +102,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cad-gltf"
+version = "0.3.0"
+dependencies = [
+ "cad-export",
+ "cad-ir",
+ "cad-tess",
+ "cad-xt",
+ "gltf",
+ "thiserror",
+]
+
+[[package]]
 name = "cad-ir"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "cad-step"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-export",
  "cad-ir",
@@ -123,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "cad-tess"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-ir",
  "cad-step",
@@ -134,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "cad-xt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cad-export",
  "cad-ir",
@@ -579,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "xt-parser"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "mimalloc",
  "thiserror",

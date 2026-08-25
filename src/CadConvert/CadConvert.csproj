@@ -10,7 +10,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
     <PackageId>CadConvert</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Authors>omerbasavul</Authors>
     <Description>Parasolid (.x_t) and STEP (.stp) to glTF 2.0 or USDZ. Reads the B-Rep, tessellates it watertight, and writes a mesh with the materials the designer chose. No CAD kernel to install.</Description>
     <PackageTags>cad;parasolid;step;gltf;glb;usd;usdz;mesh;tessellation;brep</PackageTags>

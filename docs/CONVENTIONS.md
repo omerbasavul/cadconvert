@@ -31,6 +31,7 @@ xt-parser    Parasolid XT text → raw entities            no dependencies
 cad-ir       B-Rep, scene, materials, .sldmat, .p2m      no dependencies
 cad-xt       XT → cad-ir
 cad-step     ISO 10303-21 → cad-ir
+cad-gltf     glTF 2.0 → cad-ir, already meshed; the tessellator passes it by
 cad-tess     cad-ir → watertight triangles
 cad-export   cad-ir → GLB / OBJ / USDZ
 cad-convert  read → tessellate → write, in one call

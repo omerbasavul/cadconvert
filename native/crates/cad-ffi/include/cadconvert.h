@@ -1,13 +1,17 @@
-/* cadconvert — Parasolid (.x_t) and STEP (.stp) to glTF binary.
+/* cadconvert — Parasolid (.x_t), STEP (.stp) and glTF (.glb) to glTF binary
+ * or USDZ.
  *
  * Ownership is one-directional: every string this library returns was
  * allocated by it and must come back to cadconvert_string_free. Nothing the
- * caller allocates is ever freed here. No function unwinds; a panic inside the
- * converter comes back as CADCONVERT_ERR_PANIC.
+ * caller allocates is ever freed here. The one string that goes the other way
+ * — the `detail` a progress callback receives — is lent for that call only.
+ * No function unwinds; a panic inside the converter comes back as
+ * CADCONVERT_ERR_PANIC.
  */
 #ifndef CADCONVERT_H
 #define CADCONVERT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,6 +32,12 @@ extern "C" {
 #define CADCONVERT_ERR_READ            4
 #define CADCONVERT_ERR_WRITE           5
 #define CADCONVERT_ERR_PANIC           6
+#define CADCONVERT_ERR_CANCELLED       7  /* the progress callback said stop */
+
+/* Where a conversion is, as the progress callback hears it. */
+#define CADCONVERT_STAGE_READ  1  /* one unit: the input */
+#define CADCONVERT_STAGE_MESH  2  /* a unit is a body; a file that arrived meshed has none */
+#define CADCONVERT_STAGE_WRITE 3  /* a unit is an output file */
 
 typedef struct {
     double  sag_mm;              /* mesh-to-surface distance in mm; 0 = the converter's own
@@ -38,12 +48,23 @@ typedef struct {
 } cadconvert_options;
 
 typedef struct {
-    uint64_t bytes;
+    uint64_t bytes;              /* every output added up */
     uint64_t bodies;
-    uint64_t faces;
+    uint64_t faces;              /* 0 for a file that arrived as a mesh */
     uint64_t faces_meshed;
     uint64_t triangles;
 } cadconvert_summary;
+
+/* Told between units of work, on the calling thread: `done` of `total` units
+ * of `stage` are finished, and `detail` names the unit about to start (empty
+ * when the stage is complete). Every stage reports at its start and after each
+ * unit. Return 0 to continue, anything else to stop — the conversion then
+ * returns CADCONVERT_ERR_CANCELLED. Must not unwind. */
+typedef int32_t (*cadconvert_progress_fn)(void *user,
+                                          int32_t stage,
+                                          uint64_t done,
+                                          uint64_t total,
+                                          const char *detail);
 
 /* Fill options with the defaults. A null pointer does nothing. */
 void cadconvert_default_options(cadconvert_options *options);
@@ -61,10 +82,25 @@ const char *cadconvert_version(void);
  * options, summary and message may each be NULL.
  */
 int32_t cadconvert_convert(const char *input,
-                        const char *output,
-                        const cadconvert_options *options,
-                        cadconvert_summary *summary,
-                        char **message);
+                           const char *output,
+                           const cadconvert_options *options,
+                           cadconvert_summary *summary,
+                           char **message);
+
+/* Read input once, mesh it once, and write it to each of output_count
+ * outputs. Each output's extension chooses its container (.glb or .usdz), so a
+ * part wanted in both is one call and one reading. progress, when not NULL,
+ * is called between units of work with user passed back untouched. Everything
+ * else is as cadconvert_convert; summary.bytes is every output added up.
+ */
+int32_t cadconvert_convert_many(const char *input,
+                                const char *const *outputs,
+                                size_t output_count,
+                                const cadconvert_options *options,
+                                cadconvert_progress_fn progress,
+                                void *user,
+                                cadconvert_summary *summary,
+                                char **message);
 
 /* Give back a string this library returned. NULL is accepted and ignored. */
 void cadconvert_string_free(char *text);

@@ -52,6 +52,9 @@ pub struct Report {
     pub vertices: usize,
     /// Faces whose triangulation succeeded.
     pub faces_ok: usize,
+    /// The caller stopped it between bodies; see [`tessellate_scene_with`].
+    /// The counts above are for the bodies that were meshed.
+    pub cancelled: bool,
 }
 
 /// A face that could not be triangulated.
@@ -83,6 +86,24 @@ impl Report {
 
 /// Tessellate every geometry in the scene, filling each one's mesh.
 pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
+    tessellate_scene_with(scene, options, &mut |_, _| true)
+}
+
+/// [`tessellate_scene`], telling the caller between bodies.
+///
+/// `progress(done, total)` is called on the calling thread before the first
+/// body and after each one, with how many of the bodies that have a boundary
+/// representation are meshed. Returning `false` stops the work: the bodies
+/// meshed so far keep their meshes, the rest are left as they were, and the
+/// report says [`Report::cancelled`]. Between bodies rather than between faces
+/// because a body's faces run in parallel and a callback from inside that
+/// would arrive on a worker thread — which a caller across a foreign ABI
+/// cannot be handed.
+pub fn tessellate_scene_with(
+    scene: &mut Scene,
+    options: &Options,
+    progress: &mut dyn FnMut(usize, usize) -> bool,
+) -> Report {
     // Resolve a relative tolerance against the whole scene, so every part of an
     // assembly is tessellated to the same absolute accuracy — otherwise a small
     // bracket gets a hundred times the triangle density of the frame it bolts
@@ -121,15 +142,21 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
     // meshes first and assigning them afterwards — which this did — holds
     // every brep and every mesh at once for no reason but the borrow checker.
     let mut report = Report::default();
+    let wanted = |g: &cad_ir::Geometry| match &g.brep {
+        Some(solid) => only
+            .as_ref()
+            .map(|w| g.name.contains(w) || solid.name.contains(w))
+            .unwrap_or(true),
+        None => false,
+    };
+    let total = scene.geometry.iter().filter(|g| wanted(g)).count();
+    let mut done = 0;
+    if !progress(done, total) {
+        report.cancelled = true;
+        return report;
+    }
     for g in scene.geometry.iter_mut() {
-        let wanted = match &g.brep {
-            Some(solid) => only
-                .as_ref()
-                .map(|w| g.name.contains(w) || solid.name.contains(w))
-                .unwrap_or(true),
-            None => false,
-        };
-        if !wanted {
+        if !wanted(g) {
             continue;
         }
 
@@ -157,6 +184,11 @@ pub fn tessellate_scene(scene: &mut Scene, options: &Options) -> Report {
         drop(taken);
         if !mesh.is_empty() {
             g.mesh = Some(mesh);
+        }
+        done += 1;
+        if !progress(done, total) {
+            report.cancelled = true;
+            return report;
         }
     }
     report

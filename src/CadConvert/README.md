@@ -1,8 +1,9 @@
 # CadConvert
 
-Parasolid (`.x_t`) and STEP (`.stp`) to **glTF 2.0** or **USDZ**. Reads the
-B-Rep, tessellates it watertight, and writes a mesh with materials — no CAD
-kernel to install.
+Parasolid (`.x_t`), STEP (`.stp`) or glTF (`.glb`) to **glTF 2.0** or
+**USDZ**. Reads the B-Rep, tessellates it watertight, and writes a mesh with
+materials — no CAD kernel to install. A glTF input is already a mesh and is
+written as it is, which is how a part held as GLB gets its USDZ.
 
 ```csharp
 using CadConvert;
@@ -14,6 +15,28 @@ Console.WriteLine($"{result.Bodies} bodies, {result.Triangles:N0} triangles");
 foreach (var warning in result.Warnings)
     Console.WriteLine($"warning: {warning}");
 ```
+
+## Several outputs from one reading
+
+A part wanted as both is read and meshed once:
+
+```csharp
+var result = CadConverter.ConvertMany(
+    "housing.x_t",
+    new[] { "housing.glb", "housing.usdz" },
+    progress: p => Console.Error.WriteLine(p),   // "Mesh 3/46: bracket"
+    cancellationToken: token);
+
+foreach (var o in result.Outputs)
+    Console.WriteLine($"{o.Path}: {o.Bytes:N0} bytes");
+```
+
+`progress` is called on the calling thread between units of work — every
+stage as it opens, each body as it is meshed, each file as it is written —
+with `Done` of `Total` and the unit about to start in `Detail`. A cancelled
+token stops the work at the next unit with `OperationCanceledException`;
+outputs already written stay on disk. An exception thrown by the handler stops
+it the same way and comes back as itself.
 
 ## Defaults
 
@@ -28,6 +51,16 @@ every vertex exactly where it was computed. `Compact` also puts positions on
 each mesh's own 16-bit grid — about a quarter smaller again, and it collapses
 the mesh's finest slivers, so it is for delivery rather than for modelling with.
 `Plain` compresses nothing.
+
+## glTF in
+
+`.glb` and `.gltf` are read as they are: the node tree, every triangle
+primitive, the metallic-roughness materials with their colour and normal maps.
+What the scene has no word for — an occlusion map, a line primitive, an
+animation — is named in `Warnings` rather than dropped in silence. A file that
+*requires* something the reader does not implement (Draco or meshopt
+compression, KTX2 textures) is refused by that thing's name: export it without
+compression. `Faces` is zero for a glTF input, which has triangles and no faces.
 
 ## Warnings are not failures
 

@@ -3,17 +3,24 @@
 Turn a CAD file into a mesh: **Parasolid** (`.x_t`) and **STEP** (`.stp`) in,
 **glTF 2.0** or **USDZ** out — the B-Rep read, tessellated watertight, with the
 materials the designer chose. No CAD kernel to install and no licence server;
-one native library of about 2.5 MB.
+one native library of about 2.5 MB. A **glTF** (`.glb`) goes in too: already a
+mesh, it is written as it is, which is how a part held as GLB gets its USDZ.
 
 ```csharp
 var result = CadConvert.CadConverter.Convert("housing.x_t", "housing.glb");
 Console.WriteLine($"{result.Bodies} bodies, {result.Triangles:N0} triangles");
+
+// Both containers from one reading, told where the work is, cancellable.
+CadConvert.CadConverter.ConvertMany("housing.x_t", new[] { "housing.glb", "housing.usdz" },
+    progress: p => Console.Error.WriteLine(p), cancellationToken: token);
 ```
 
 ```sh
 cadconvert housing.x_t                       # → housing.glb
 cadconvert assembly.stp out.glb -q compact
 cadconvert assembly.stp out.usdz             # the extension picks the format
+cadconvert assembly.stp out.glb out.usdz     # both, from one reading
+cadconvert held.glb held.usdz --progress     # a GLB onward, saying where it is
 ```
 
 ```c
@@ -123,6 +130,41 @@ cent, since the parts the pilot repeats are the small ones.
 
 `--usd-text` writes the text form instead, which is worth having when a reader
 and a writer disagree about what is in a file and you want to open it and look.
+
+## glTF in
+
+`.glb` and `.gltf` are read by `cad-gltf` into the same scene the CAD readers
+produce, already meshed: the node tree with its transforms, every triangle
+primitive (strips and fans included), the metallic-roughness materials with
+their colour and normal maps, and the extensions this converter's own writer
+emits — `KHR_mesh_quantization`, `KHR_texture_transform`, `KHR_materials_ior`,
+`KHR_materials_transmission`. Metres become millimetres and Y-up becomes Z-up
+on the way in, baked into the vertices and conjugated into every node, so the
+mesh a writer sees is in the space every other reader produces and the
+tolerances downstream mean what they say. A GLB this converter wrote reads back
+to the same triangles and, to float precision, the same millimetres.
+
+What the scene has no word for is named in the warnings rather than dropped in
+silence: an occlusion or metallic-roughness map, a line primitive, a second
+texture set, an animation. What the reader does not implement and the file
+*requires* is refused by name — Draco and meshopt compression, KTX2 textures —
+with the instruction to export without it.
+
+## Several outputs, and where the work is
+
+A part wanted as both glTF and USDZ is read and meshed once:
+`cadconvert_convert_many` in C, `CadConverter.ConvertMany(input, outputs, …)` in
+.NET, and simply more than one output on the command line. Reading a
+30 MB Parasolid is most of the wall clock, and it is not paid twice.
+
+Between units of work — each stage as it opens, each body as it is meshed,
+each file as it is written — the converter reports where it is, on the calling
+thread: `done` of `total` and the unit about to start. A caller shows "meshing
+body 3 of 46: bracket" without keeping state of its own, and can answer *stop*,
+which returns `CADCONVERT_ERR_CANCELLED` (an `OperationCanceledException` in
+.NET) at the next unit. It is between bodies rather than between faces because
+a body's faces run in parallel, and a callback from inside that would arrive
+on a worker thread — which a caller across a foreign ABI cannot be handed.
 
 ## Robustness and cost
 

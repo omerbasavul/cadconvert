@@ -11,6 +11,7 @@ cad-step.workspace = true
 cad-tess.workspace = true
 cad-export.workspace = true
 cad-xt.workspace = true
+cad-gltf.workspace = true
 xt-parser.workspace = true
 thiserror.workspace = true
 
@@ -19,3 +20,4 @@ mimalloc.workspace = true
 xt-parser.workspace = true
 cad-step.workspace = true
 cad-xt.workspace = true
+cad-gltf.workspace = true

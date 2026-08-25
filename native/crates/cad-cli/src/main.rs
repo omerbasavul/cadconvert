@@ -33,13 +33,19 @@ enum Phase {
 }
 
 const USAGE: &str = "\
-cadconvert — Parasolid (.x_t) and STEP (.stp) to glTF binary or USDZ
+cadconvert — Parasolid (.x_t), STEP (.stp) or glTF (.glb) to glTF binary or USDZ
 
-  cadconvert <input> [output] [options]
+  cadconvert <input> [output...] [options]
 
-  The output's extension chooses the container: .glb for glTF binary,
-  .usdz for a USD package. Without an output, the input's name with .glb.
+  Each output's extension chooses its container: .glb for glTF binary,
+  .usdz for a USD package. Several outputs are written from one reading —
+  `part.x_t part.glb part.usdz` reads and meshes the part once. Without an
+  output, the input's name with .glb. A glTF input is already a mesh and is
+  written as it is, so .glb to .usdz costs a read and a write.
 
+      --progress                       say where the work is, on stderr:
+                                       each stage as it opens, each body as
+                                       it is meshed, each file as it is written
   -q, --quality <plain|lean|compact>   how a glTF stores its vertices
                                        (default: lean). USD has no such
                                        choice and ignores this.
@@ -86,7 +92,8 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut input: Option<PathBuf> = None;
-    let mut output: Option<PathBuf> = None;
+    let mut outputs: Vec<PathBuf> = Vec::new();
+    let mut progress = false;
     let mut options = cad_convert::Options {
         target: cad_convert::Target::GlbLean,
         ..Default::default()
@@ -138,6 +145,7 @@ fn run() -> Result<(), String> {
                 usd_text = true;
             }
             "--no-twin" => options.use_parasolid_twin = false,
+            "--progress" => progress = true,
             "--stop-after" => {
                 stop_after = Some(match value()?.as_str() {
                     "read" => Phase::Read,
@@ -147,8 +155,7 @@ fn run() -> Result<(), String> {
             }
             other if other.starts_with('-') => return Err(format!("unknown option {other:?}")),
             other if input.is_none() => input = Some(PathBuf::from(other)),
-            other if output.is_none() => output = Some(PathBuf::from(other)),
-            other => return Err(format!("unexpected argument {other:?}")),
+            other => outputs.push(PathBuf::from(other)),
         }
     }
 
@@ -156,8 +163,9 @@ fn run() -> Result<(), String> {
         print!("{USAGE}");
         return Err("no input file".into());
     };
-    let output = output
-        .unwrap_or_else(|| input.with_extension(options.target.extension()));
+    if outputs.is_empty() {
+        outputs.push(input.with_extension(options.target.extension()));
+    }
 
     options.usd_text = usd_text;
     if let Some(mm) = sag {
@@ -201,18 +209,41 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let summary = cad_convert::convert(&input, &output, &options).map_err(|e| e.to_string())?;
+    // Between units of work, on this thread. A caller watching a 45-second
+    // Parasolid otherwise sees nothing until the end and cannot tell a slow
+    // read from a hung one.
+    let mut report = |p: &cad_convert::Progress| -> bool {
+        if progress {
+            let stage = match p.stage {
+                cad_convert::Stage::Read => "reading",
+                cad_convert::Stage::Mesh => "meshing",
+                cad_convert::Stage::Write => "writing",
+            };
+            if p.detail.is_empty() {
+                eprintln!("  {stage} {}/{} done, {:.1} s", p.done, p.total, started.elapsed().as_secs_f64());
+            } else {
+                eprintln!("  {stage} {}/{}: {}", p.done + 1, p.total, p.detail);
+            }
+        }
+        true
+    };
+    let summary =
+        cad_convert::convert_many(&input, &outputs, &options, &mut report).map_err(|e| e.to_string())?;
     let elapsed = started.elapsed().as_secs_f64();
 
+    let written: Vec<String> = summary
+        .outputs
+        .iter()
+        .map(|w| format!("{} ({:.2} MB)", w.path.display(), w.bytes as f64 / 1e6))
+        .collect();
     println!(
-        "{} -> {}  {} bodies, {}/{} faces, {} triangles, {:.2} MB in {elapsed:.1} s",
+        "{} -> {}  {} bodies, {}/{} faces, {} triangles in {elapsed:.1} s",
         input.display(),
-        summary.output.display(),
+        written.join(", "),
         summary.bodies,
         summary.faces_meshed,
         summary.faces,
         summary.triangles,
-        summary.bytes as f64 / 1e6,
     );
     for w in &summary.warnings {
         eprintln!("  warning: {w}");

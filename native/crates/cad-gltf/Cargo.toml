@@ -1,0 +1,26 @@
+[package]
+name = "cad-gltf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reads glTF 2.0 (.glb, .gltf) into the cad-ir scene, already meshed"
+
+[dependencies]
+cad-ir.workspace = true
+thiserror.workspace = true
+# Without `import`: that feature pulls in an image decoder to turn every
+# texture into pixels, and the scene holds a texture as the encoded file it
+# arrived as — the writers copy it through. Buffers are loaded here instead,
+# which is a base64 decoder and a file read.
+gltf = { version = "1.4", default-features = false, features = [
+    "names",
+    "extensions",
+    "KHR_materials_ior",
+    "KHR_materials_transmission",
+    "KHR_texture_transform",
+] }
+
+[dev-dependencies]
+cad-xt.workspace = true
+cad-tess.workspace = true
+cad-export.workspace = true
