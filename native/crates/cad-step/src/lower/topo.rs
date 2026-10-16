@@ -80,7 +80,7 @@ impl<'a> SolidBuilder<'a> {
                 let mut a = self.file.args_of(e);
                 self.solid.name = a.next_str()?.into_owned();
                 let outer = a.next_ref()?;
-                self.add_shell(outer, false)?;
+                self.add_shell(outer, false, false)?;
                 self.solid.body_type = BodyType::Solid;
                 Ok(true)
             }
@@ -88,13 +88,14 @@ impl<'a> SolidBuilder<'a> {
                 let mut a = self.file.args_of(e);
                 self.solid.name = a.next_str()?.into_owned();
                 let outer = a.next_ref()?;
-                self.add_shell(outer, false)?;
+                self.add_shell(outer, false, false)?;
                 let mut voids = Vec::new();
                 a.next_ref_list(&mut voids)?;
                 for v in voids {
-                    // Each void is an ORIENTED_CLOSED_SHELL wrapping a shell.
-                    let shell = self.unwrap_oriented_shell(v)?;
-                    self.add_shell(shell, true)?;
+                    // Each void is an ORIENTED_CLOSED_SHELL wrapping a shell,
+                    // usually `.F.`: the cavity's faces point into the hole.
+                    let (shell, forward) = self.unwrap_oriented_shell(v)?;
+                    self.add_shell(shell, true, !forward)?;
                 }
                 self.solid.body_type = BodyType::Solid;
                 Ok(true)
@@ -105,15 +106,15 @@ impl<'a> SolidBuilder<'a> {
                 let mut shells = Vec::new();
                 a.next_ref_list(&mut shells)?;
                 for s in shells {
-                    let s = self.unwrap_oriented_shell(s)?;
-                    self.add_shell(s, false)?;
+                    let (s, forward) = self.unwrap_oriented_shell(s)?;
+                    self.add_shell(s, false, !forward)?;
                 }
                 self.solid.body_type = BodyType::Sheet;
                 Ok(true)
             }
             Kind::ClosedShell | Kind::OpenShell => {
                 let closed = e.kind == Kind::ClosedShell;
-                self.add_shell(id, false)?;
+                self.add_shell(id, false, false)?;
                 self.solid.body_type = if closed {
                     BodyType::Solid
                 } else {
@@ -139,19 +140,25 @@ impl<'a> SolidBuilder<'a> {
         v
     }
 
-    fn unwrap_oriented_shell(&self, id: u32) -> Result<u32> {
+    /// The shell an `ORIENTED_CLOSED_SHELL` wraps and whether it keeps its
+    /// sense; any other shell is itself, forward.
+    ///
+    /// `ORIENTED_CLOSED_SHELL(name, cfs_faces, closed_shell_element,
+    /// orientation)`: `cfs_faces` is derived, so Part 21 writes it as `*`.
+    fn unwrap_oriented_shell(&self, id: u32) -> Result<(u32, bool)> {
         match self.file.kind_of(id) {
             Kind::OrientedClosedShell => {
                 let mut a = self.file.args(id)?;
-                a.skip()?; // name
+                a.skip_n(2)?; // name, cfs_faces (*)
                 let base = a.next_ref()?;
-                Ok(base)
+                let forward = a.next_bool()?.unwrap_or(true);
+                Ok((base, forward))
             }
-            _ => Ok(id),
+            _ => Ok((id, true)),
         }
     }
 
-    fn add_shell(&mut self, id: u32, is_void: bool) -> Result<()> {
+    fn add_shell(&mut self, id: u32, is_void: bool, reversed: bool) -> Result<()> {
         let e = self.file.require(id)?;
         let closed = e.kind == Kind::ClosedShell;
         let mut a = self.file.args_of(e);
@@ -170,6 +177,12 @@ impl<'a> SolidBuilder<'a> {
                 }),
             }
         }
+        if reversed {
+            for &fid in &faces {
+                let f = &mut self.solid.faces[fid.index()];
+                f.same_sense = !f.same_sense;
+            }
+        }
         self.solid.shells.push(Shell {
             faces,
             closed,
@@ -183,16 +196,13 @@ impl<'a> SolidBuilder<'a> {
             return Ok(Some(existing));
         }
         let e = self.file.require(id)?;
-        // ORIENTED_FACE wraps another face and flips it.
+        // ORIENTED_FACE(name, bounds, face_element, orientation) wraps another
+        // face and flips it; `bounds` is derived, so Part 21 writes it as `*`.
         if e.kind == Kind::OrientedFace {
             let mut a = self.file.args_of(e);
-            a.skip()?; // name
+            a.skip_n(2)?; // name, bounds (*)
             let base = a.next_ref()?;
-            let orientation = {
-                let mut b = self.file.args_of(e);
-                b.skip_n(2)?;
-                b.next_bool()?.unwrap_or(true)
-            };
+            let orientation = a.next_bool()?.unwrap_or(true);
             let inner = self.add_face(base)?;
             if let (Some(fid), false) = (inner, orientation) {
                 let f = &mut self.solid.faces[fid.index()];
@@ -644,3 +654,40 @@ pub fn same_point(a: Vec3, b: Vec3, tolerance: f64) -> bool {
 /// `cad_ir::brep` directly.
 pub type LoweredSurface = Surface;
 pub type LoweredCurve = Curve;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A solid with a cavity as SolidWorks writes it: the derived attributes of
+    // ORIENTED_CLOSED_SHELL and ORIENTED_FACE are `*`, never a reference.
+    const SRC: &str = "\
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('STEP AP203'),'1');
+FILE_NAME('void','2026-10-13T10:44:54',(''),(''),'SwSTEP 2.0','SolidWorks 2024','');
+FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
+ENDSEC;
+DATA;
+#1=BREP_WITH_VOIDS('part',#2,(#3));
+#2=CLOSED_SHELL('',(#5));
+#3=ORIENTED_CLOSED_SHELL('',*,#4,.F.);
+#4=CLOSED_SHELL('',());
+#5=ORIENTED_FACE('',*,#6,.F.);
+#6=CARTESIAN_POINT('',(0.,0.,0.));
+ENDSEC;
+END-ISO-10303-21;
+";
+
+    #[test]
+    fn a_void_shell_with_derived_attributes_is_read() {
+        let file = StepFile::from_bytes(SRC.as_bytes().to_vec()).unwrap();
+        let mut lower = SolidBuilder::new(&file, 1e-6);
+        assert!(lower.add_item(1).unwrap());
+        let (solid, skipped) = lower.finish();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(solid.shells.len(), 2);
+        assert!(!solid.shells[0].is_void);
+        assert!(solid.shells[1].is_void);
+    }
+}
