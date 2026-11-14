@@ -91,7 +91,7 @@ fn nothing_at_all_does_not_panic() {
     assert!(!convert("empty.x_t", b""), "an empty file cannot convert");
     assert!(!convert("empty.stp", b""), "an empty file cannot convert");
     assert!(
-        !convert("noise.x_t", &(0u16..8192).map(|i| (i * 37) as u8).collect::<Vec<_>>()),
+        !convert("noise.x_t", &(0u16..8192).map(|i| i.wrapping_mul(37) as u8).collect::<Vec<_>>()),
         "arbitrary bytes are not a Parasolid file"
     );
 }
