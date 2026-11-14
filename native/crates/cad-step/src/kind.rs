@@ -138,6 +138,7 @@ kinds! {
     OpenShell                 => b"OPEN_SHELL",
     ClosedShell               => b"CLOSED_SHELL",
     OrientedClosedShell       => b"ORIENTED_CLOSED_SHELL",
+    OrientedOpenShell         => b"ORIENTED_OPEN_SHELL",
     ManifoldSolidBrep         => b"MANIFOLD_SOLID_BREP",
     BrepWithVoids             => b"BREP_WITH_VOIDS",
     ShellBasedSurfaceModel    => b"SHELL_BASED_SURFACE_MODEL",

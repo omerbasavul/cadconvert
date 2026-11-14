@@ -169,6 +169,25 @@ impl StepFile {
             .unwrap_or("")
     }
 
+    /// The instance whose parameters contain byte `offset`, as its name and
+    /// keyword.
+    pub fn record_at(&self, offset: usize) -> Option<(u32, &str)> {
+        // Entities are in file order, so their parameter ranges ascend.
+        let i = self
+            .entities
+            .partition_point(|e| e.args.end as usize <= offset);
+        let e = self.entities.get(i)?;
+        if (e.args.start as usize) > offset {
+            return None;
+        }
+        let keyword = if e.kind == Kind::Other {
+            self.keyword(e)
+        } else {
+            e.kind.as_str()
+        };
+        Some((e.id, keyword))
+    }
+
     /// An argument cursor over an entity's parameters.
     pub fn args_of(&self, e: &Entity) -> Args<'_> {
         Args::new(&self.buf, e.args.clone())

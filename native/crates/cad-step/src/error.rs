@@ -60,4 +60,22 @@ impl StepError {
             detail: detail.into(),
         }
     }
+
+    /// Name the instance a value error stopped in.
+    ///
+    /// A value error knows only its byte offset, and an offset into a file the
+    /// reader of the message does not have says nothing about which entity was
+    /// not what this reader expected. The instance there does.
+    pub(crate) fn located(self, file: &crate::StepFile) -> Self {
+        match self {
+            StepError::Value { offset, detail } => {
+                let detail = match file.record_at(offset) {
+                    Some((id, keyword)) => format!("{detail}, in #{id} {keyword}"),
+                    None => detail,
+                };
+                StepError::Value { offset, detail }
+            }
+            other => other,
+        }
+    }
 }

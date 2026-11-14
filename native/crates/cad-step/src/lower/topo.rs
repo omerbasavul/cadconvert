@@ -79,16 +79,20 @@ impl<'a> SolidBuilder<'a> {
             Kind::ManifoldSolidBrep => {
                 let mut a = self.file.args_of(e);
                 self.solid.name = a.next_str()?.into_owned();
-                let outer = a.next_ref()?;
-                self.add_shell(outer, false, false)?;
+                // `outer` is a closed shell, and an oriented one is a closed
+                // shell too.
+                let (outer, forward) = self.unwrap_oriented_shell(a.next_ref()?)?;
+                self.add_shell(outer, false, !forward)?;
                 self.solid.body_type = BodyType::Solid;
                 Ok(true)
             }
             Kind::BrepWithVoids => {
                 let mut a = self.file.args_of(e);
                 self.solid.name = a.next_str()?.into_owned();
-                let outer = a.next_ref()?;
-                self.add_shell(outer, false, false)?;
+                // `outer` is a closed shell, and an oriented one is a closed
+                // shell too.
+                let (outer, forward) = self.unwrap_oriented_shell(a.next_ref()?)?;
+                self.add_shell(outer, false, !forward)?;
                 let mut voids = Vec::new();
                 a.next_ref_list(&mut voids)?;
                 for v in voids {
@@ -140,22 +144,34 @@ impl<'a> SolidBuilder<'a> {
         v
     }
 
-    /// The shell an `ORIENTED_CLOSED_SHELL` wraps and whether it keeps its
-    /// sense; any other shell is itself, forward.
+    /// The shell an oriented shell wraps and whether it keeps its sense; any
+    /// other shell is itself, forward.
     ///
     /// `ORIENTED_CLOSED_SHELL(name, cfs_faces, closed_shell_element,
-    /// orientation)`: `cfs_faces` is derived, so Part 21 writes it as `*`.
+    /// orientation)` and `ORIENTED_OPEN_SHELL(name, cfs_faces,
+    /// open_shell_element, orientation)`: `cfs_faces` is derived, so Part 21
+    /// writes it as `*`. The element is a shell, so it may be oriented in its
+    /// turn, and the senses compose.
     fn unwrap_oriented_shell(&self, id: u32) -> Result<(u32, bool)> {
-        match self.file.kind_of(id) {
-            Kind::OrientedClosedShell => {
-                let mut a = self.file.args(id)?;
-                a.skip_n(2)?; // name, cfs_faces (*)
-                let base = a.next_ref()?;
-                let forward = a.next_bool()?.unwrap_or(true);
-                Ok((base, forward))
+        // Deeper than any exporter nests them; the bound is what stops a
+        // wrapper that names itself.
+        const MAX_DEPTH: usize = 8;
+        let (mut id, mut forward) = (id, true);
+        for _ in 0..MAX_DEPTH {
+            let kind = self.file.kind_of(id);
+            if !matches!(kind, Kind::OrientedClosedShell | Kind::OrientedOpenShell) {
+                return Ok((id, forward));
             }
-            _ => Ok((id, true)),
+            let mut a = self.file.args(id)?;
+            a.skip_n(2)?; // name, cfs_faces (*)
+            id = a.next_ref()?;
+            forward = forward == a.next_bool()?.unwrap_or(true);
         }
+        Err(StepError::WrongKind {
+            id,
+            actual: self.file.kind_of(id).as_str().to_string(),
+            expected: "a shell",
+        })
     }
 
     fn add_shell(&mut self, id: u32, is_void: bool, reversed: bool) -> Result<()> {
@@ -689,5 +705,88 @@ END-ISO-10303-21;
         assert_eq!(solid.shells.len(), 2);
         assert!(!solid.shells[0].is_void);
         assert!(solid.shells[1].is_void);
+    }
+
+    /// A Part 21 file around the given DATA section.
+    fn step(data: &str) -> StepFile {
+        let src = format!(
+            "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'1');\n\
+             FILE_NAME('t','',(''),(''),'','','');\nFILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\n\
+             ENDSEC;\nDATA;\n{data}ENDSEC;\nEND-ISO-10303-21;\n"
+        );
+        StepFile::from_bytes(src.into_bytes()).unwrap()
+    }
+
+    #[test]
+    fn an_oriented_open_shell_in_a_surface_model_is_read() {
+        let file = step(
+            "#1=SHELL_BASED_SURFACE_MODEL('sheet',(#2));\n\
+             #2=ORIENTED_OPEN_SHELL('',*,#3,.F.);\n\
+             #3=OPEN_SHELL('',());\n",
+        );
+        let mut lower = SolidBuilder::new(&file, 1e-6);
+        assert!(lower.add_item(1).unwrap());
+        let (solid, skipped) = lower.finish();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(solid.shells.len(), 1);
+        assert!(!solid.shells[0].closed);
+    }
+
+    #[test]
+    fn a_solid_whose_outer_shell_is_oriented_is_read() {
+        let file = step(
+            "#1=MANIFOLD_SOLID_BREP('part',#2);\n\
+             #2=ORIENTED_CLOSED_SHELL('',*,#3,.T.);\n\
+             #3=CLOSED_SHELL('',());\n",
+        );
+        let mut lower = SolidBuilder::new(&file, 1e-6);
+        assert!(lower.add_item(1).unwrap());
+        let (solid, _) = lower.finish();
+        assert_eq!(solid.shells.len(), 1);
+        assert!(solid.shells[0].closed);
+    }
+
+    #[test]
+    fn oriented_shells_compose_their_senses() {
+        let file = step(
+            "#2=ORIENTED_CLOSED_SHELL('',*,#3,.F.);\n\
+             #3=ORIENTED_CLOSED_SHELL('',*,#4,.F.);\n\
+             #4=CLOSED_SHELL('',());\n",
+        );
+        let lower = SolidBuilder::new(&file, 1e-6);
+        assert_eq!(lower.unwrap_oriented_shell(2).unwrap(), (4, true));
+        assert_eq!(lower.unwrap_oriented_shell(3).unwrap(), (4, false));
+        assert_eq!(lower.unwrap_oriented_shell(4).unwrap(), (4, true));
+    }
+
+    #[test]
+    fn an_oriented_shell_that_wraps_itself_is_refused() {
+        let file = step(
+            "#1=SHELL_BASED_SURFACE_MODEL('',(#2));\n\
+             #2=ORIENTED_OPEN_SHELL('',*,#2,.T.);\n",
+        );
+        let mut lower = SolidBuilder::new(&file, 1e-6);
+        let err = lower.add_item(1).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "entity #2 is ORIENTED_OPEN_SHELL, expected a shell"
+        );
+    }
+
+    #[test]
+    fn a_value_error_names_the_instance_it_stopped_in() {
+        let file = step(
+            "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #7=CLOSED_SHELL('',*);\n",
+        );
+        let mut lower = SolidBuilder::new(&file, 1e-6);
+        let err = lower.add_item(7).unwrap_err().located(&file);
+        let message = err.to_string();
+        assert!(
+            message.ends_with("expected a list, found `*`, in #7 CLOSED_SHELL"),
+            "{message}"
+        );
+        // The header is no instance's.
+        assert_eq!(file.record_at(0), None);
     }
 }
