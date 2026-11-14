@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -87,12 +87,12 @@ jobs:
         include:
           - { rid: linux-x64,   os: ubuntu-latest,    lib: libcadconvert_native.so }
           - { rid: linux-arm64, os: ubuntu-24.04-arm, lib: libcadconvert_native.so }
-          - { rid: osx-arm64,   os: macos-14,         lib: libcadconvert_native.dylib }
+          - { rid: osx-arm64,   os: macos-15,         lib: libcadconvert_native.dylib }
           # Cross-built from Apple Silicon: GitHub's Intel Macs are scarce
           # enough that this job once sat queued for over an hour while
           # every other runtime finished in about one, and the job that
           # packs the package waits on all of them.
-          - { rid: osx-x64,     os: macos-14,         lib: libcadconvert_native.dylib }
+          - { rid: osx-x64,     os: macos-15,         lib: libcadconvert_native.dylib }
           - { rid: win-x64,     os: windows-latest,   lib: cadconvert_native.dll }
     steps:
       - uses: actions/checkout@v4
