@@ -60,7 +60,14 @@ pub fn to_scene(file: &StepFile) -> Result<(Scene, Report)> {
 }
 
 /// Lower a whole STEP file into a scene.
+///
+/// A value the reader could not take is reported with the instance it stopped
+/// in: the byte offset alone does not say which entity was unexpected.
 pub fn to_scene_with(file: &StepFile, options: &LowerOptions) -> Result<(Scene, Report)> {
+    lower_scene(file, options).map_err(|e| e.located(file))
+}
+
+fn lower_scene(file: &StepFile, options: &LowerOptions) -> Result<(Scene, Report)> {
     let units = units::resolve(file)?;
     let styles = presentation::resolve(file)?;
     let mut report = Report {
