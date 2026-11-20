@@ -9,7 +9,7 @@ use xt_parser::entity::RawEntity;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: xt_diag <file.x_t>");
     let bytes = std::fs::read(&path)?;
-    let file = xt_parser::parse_raw(&String::from_utf8_lossy(&bytes))?;
+    let file = xt_parser::parse_raw(&xt_parser::decode(bytes.clone()))?;
     let index: FxHashMap<usize, &RawEntity> = file.entities.iter().map(|e| (e.index, e)).collect();
     let type_of = |h: usize| index.get(&h).map(|e| e.type_id);
 
@@ -367,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tolerance; a transposed or garbled control grid sits millimetres off.
     if std::env::var_os("XT_NURBS_CHECK").is_some() {
         let (scene, _) = cad_xt::to_scene(
-            &String::from_utf8_lossy(&std::fs::read(&path)?),
+            &xt_parser::decode(std::fs::read(&path)?),
             &cad_xt::LowerOptions::default(),
         )?;
         let mut buckets = [0usize; 5]; // <0.01, <0.1, <1, <10, >=10 mm

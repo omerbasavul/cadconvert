@@ -469,10 +469,16 @@ pub fn parse_entities_keeping(
         let type_id = match read_uint16(input) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!(
-                    "[xt-parser] type_id read failed after {} entities: {} (next: {:?})",
-                    entities.len(), e, &input[..30.min(input.len())]
-                );
+                // Not the end of the stream: something that is not a type
+                // stands where a type should, and whatever follows is unread.
+                truncated = Some(Truncation {
+                    type_id: 0,
+                    entities_read: read,
+                    detail: format!(
+                        "no entity type where one should be: {e} (the stream goes on: {:?})",
+                        input.chars().take(30).collect::<String>()
+                    ),
+                });
                 break;
             }
         };
@@ -480,6 +486,23 @@ pub fn parse_entities_keeping(
         // type_id == 1 is the stream terminator.
         if type_id == 1 {
             let _partition_idx = read_int32(input)?;
+            // A terminator ends the stream, so nothing comes after one. If
+            // something does, it was not a terminator: the read has slipped
+            // out of step with the entities and taken part of one for it,
+            // and everything from here on is unread. Said rather than passed
+            // over, because a stream that ends early at a `1` otherwise looks
+            // exactly like one that ended.
+            let _ = token::ws(input);
+            if !input.is_empty() {
+                truncated = Some(Truncation {
+                    type_id,
+                    entities_read: read,
+                    detail: format!(
+                        "the stream goes on for {} bytes after what read as its terminator",
+                        input.len()
+                    ),
+                });
+            }
             break;
         }
 
@@ -872,8 +895,31 @@ fn read_entity_fields(
                 Some(VarType::Char) | Some(VarType::RawChar) => {
                     tail.kind = VarKind::Char;
                     tail.chars.reserve(count);
-                    for _ in 0..count {
-                        tail.chars.push(read_raw_byte(input)?);
+                    // The count is in the file's bytes and what is read here
+                    // is characters. In a UTF-8 file a name with one "ä" is a
+                    // character shorter than its count, and read as a count of
+                    // characters it took the first digit of the next entity
+                    // with it. What was left of that entity's type was read as
+                    // a type: on one assembly a `1`, the terminator, and the
+                    // stream ended there with a third of the file unread and
+                    // nothing to say it had. `decode` says how many bytes each
+                    // character was.
+                    let from = tail.chars.len();
+                    let mut left = count;
+                    while left > 0 {
+                        let c = read_raw_byte(input)?;
+                        left = left.saturating_sub(match crate::carried(c) {
+                            Some(_) => 1,
+                            None => c.len_utf8(),
+                        });
+                        tail.chars.push(c);
+                    }
+                    // And what the bytes that were not UTF-8 where they stood
+                    // spell, now that the whole string is in hand.
+                    if tail.chars[from..].iter().any(|c| crate::carried(*c).is_some()) {
+                        let text = crate::plain(&tail.chars[from..]);
+                        tail.chars.truncate(from);
+                        tail.chars.extend(text.chars());
                     }
                 }
                 // Three doubles an element, into the same array the F64 arm

@@ -71,25 +71,130 @@ pub struct RawFile {
 /// moved the process 72 MB, because a 35 MB string that doubles its way there
 /// has touched 64 MB of pages by the time it arrives.
 ///
-/// Here the bytes are handed over instead. A transmit file's entity stream is
-/// pure ASCII; only the header carries machine-locale bytes, and most files
-/// are clean throughout — those move into the string without a copy at all.
+/// Here the bytes are handed over instead. A transmit file is ASCII but for
+/// the letters of its header and of the names in it, and most files are clean
+/// throughout — those move into the string without a copy at all.
 /// A file that is not gets a conversion sized in advance from the length in
 /// hand, which is exact for every replacement-free stretch and never doubles.
+///
+/// **What a character of the result stands for.** A string in a transmit file
+/// is written with its length, and the length is in the file's bytes. The
+/// parser reads characters, so it has to know how many bytes each one was:
+///
+/// * a character that was valid UTF-8 in the file stands for as many bytes as
+///   its own encoding has, and is itself;
+/// * a byte that was not — a letter in the writer's code page — goes through
+///   as one of 256 private-use characters that remember it, [`carried`] says
+///   which, and it stands for that one byte. `U+FFFD` here lost both the
+///   letter and, where two such bytes stood together, the count.
+///
+/// A private-use character that was really in the file would be taken for a
+/// carried byte, so the few that could be are carried as the bytes of their
+/// own encoding instead. The count stays right and the name comes out as
+/// three letters where it had one, which is the least a name with a
+/// private-use character in it can expect.
 pub fn decode(bytes: Vec<u8>) -> String {
     match String::from_utf8(bytes) {
-        Ok(text) => text,
+        // Every character in the carrying range begins with this byte, and a
+        // file without it — which is every file but the odd one — is the
+        // string it already was.
+        Ok(text) if !text.as_bytes().contains(&CARRIER_LEAD) => text,
+        Ok(text) => {
+            let mut out = String::with_capacity(text.len());
+            push_as_itself(&mut out, &text);
+            out
+        }
         Err(e) => {
             let bytes = e.into_bytes();
             let mut text = String::with_capacity(bytes.len());
             for chunk in bytes.utf8_chunks() {
-                text.push_str(chunk.valid());
-                if !chunk.invalid().is_empty() {
-                    text.push(char::REPLACEMENT_CHARACTER);
+                push_as_itself(&mut text, chunk.valid());
+                for &byte in chunk.invalid() {
+                    text.push(carrier(byte));
                 }
             }
             text
         }
+    }
+}
+
+/// The private-use characters that stand for one byte each: `U+E000 + byte`.
+const CARRIERS: u32 = 0xE000;
+/// The first byte of the UTF-8 of every one of them.
+const CARRIER_LEAD: u8 = 0xEE;
+
+fn carrier(byte: u8) -> char {
+    char::from_u32(CARRIERS + byte as u32).expect("the private-use area has no gaps")
+}
+
+/// The byte a character of [`decode`]'s output stands for, where it stands
+/// for one and is not itself.
+pub fn carried(c: char) -> Option<u8> {
+    let at = (c as u32).wrapping_sub(CARRIERS);
+    (at < 0x100).then_some(at as u8)
+}
+
+/// Valid text, with any character of its own that lies in the carrying range
+/// spelled as the bytes it was.
+fn push_as_itself(out: &mut String, valid: &str) {
+    if !valid.as_bytes().contains(&CARRIER_LEAD) {
+        out.push_str(valid);
+        return;
+    }
+    for c in valid.chars() {
+        if carried(c).is_some() {
+            let mut utf8 = [0u8; 4];
+            for &byte in c.encode_utf8(&mut utf8).as_bytes() {
+                out.push(carrier(byte));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+}
+
+/// The letter a byte is in Windows-1252, the code page a Western SolidWorks
+/// writes its names in. It is Latin-1 but for 0x80 to 0x9F, where Latin-1 has
+/// control codes and Windows has the euro sign, the dashes and the quotation
+/// marks that do turn up in part names.
+pub fn letter(byte: u8) -> char {
+    const HIGH: [char; 32] = [
+        '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+        '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}', '\u{8F}',
+        '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+        '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}', '\u{178}',
+    ];
+    match byte {
+        0x80..=0x9F => HIGH[(byte - 0x80) as usize],
+        _ => byte as char,
+    }
+}
+
+/// A run of [`decode`]'s characters as the text it was.
+///
+/// The bytes are put back together first, because a letter of several bytes
+/// can have been split: a transmit file is wrapped at a fixed width counted
+/// in bytes, and a line that ends between the two bytes of an `ä` leaves
+/// neither of them valid where it stands. Whole again they are read as UTF-8
+/// if that is what they are, and otherwise each carried byte is the letter
+/// its code page says.
+pub fn plain(run: &[char]) -> String {
+    if !run.iter().any(|c| carried(*c).is_some()) {
+        return run.iter().collect();
+    }
+    let mut bytes = Vec::with_capacity(run.len() * 2);
+    for &c in run {
+        match carried(c) {
+            Some(byte) => bytes.push(byte),
+            None => {
+                let mut utf8 = [0u8; 4];
+                bytes.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+            }
+        }
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => run.iter().map(|&c| carried(c).map_or(c, letter)).collect(),
     }
 }
 
@@ -103,7 +208,7 @@ pub fn decode(bytes: Vec<u8>) -> String {
 pub fn parse_raw_owned(text: String) -> Result<RawFile> {
     let (header, tline) = {
         let (header_text, body_text) = header::split_header(&text)?;
-        let header = header::parse_header(header_text)?;
+        let header = header::parse_header(&plain(&header_text.chars().collect::<Vec<_>>()))?;
         reject_unsupported(&header, body_text)?;
         (header, schema::parse_tline(body_text)?)
     };
@@ -113,7 +218,7 @@ pub fn parse_raw_owned(text: String) -> Result<RawFile> {
 
 pub fn parse_raw(text: &str) -> Result<RawFile> {
     let (header_text, body_text) = header::split_header(text)?;
-    let header = header::parse_header(header_text)?;
+    let header = header::parse_header(&plain(&header_text.chars().collect::<Vec<_>>()))?;
 
     if body_text.starts_with("PS") || body_text.starts_with("\x50\x53") {
         return Err(XtError::UnsupportedEncoding(
@@ -259,6 +364,61 @@ T51 : TRANSMIT FILE created by modeller version 300116823 SCH_3001168_30100_1300
         assert_eq!(file.header.version, "30.1.168");
         assert_eq!(file.header.application, "TestApp");
         assert_eq!(file.header.schema_key, "SCH_3001168_30100");
+    }
+
+    /// How many bytes of the file a decoded string stands for, which is what
+    /// the length written before a string counts.
+    fn bytes_stood_for(text: &str) -> usize {
+        text.chars().map(|c| if carried(c).is_some() { 1 } else { c.len_utf8() }).sum()
+    }
+
+    #[test]
+    fn a_decoded_file_stands_for_as_many_bytes_as_it_had() {
+        // Clean text is the string it already was.
+        let clean = "Gehäuse 12 – links".to_string();
+        assert_eq!(decode(clean.clone().into_bytes()), clean);
+        assert_eq!(bytes_stood_for(&clean), clean.len());
+
+        // A code page's letters are not UTF-8 where they stand, and each is
+        // one byte: U+FFFD made one character of two such bytes together.
+        let written = b"Geh\xE4use f\xFC\xDFe".to_vec();
+        let text = decode(written.clone());
+        assert_eq!(bytes_stood_for(&text), written.len());
+        assert_eq!(plain(&text.chars().collect::<Vec<_>>()), "Gehäuse füße");
+
+        // The same file can hold both, and each keeps its own count.
+        let mut mixed = "Gehäuse ".as_bytes().to_vec();
+        mixed.extend_from_slice(b"f\xFC\xDFe");
+        let text = decode(mixed.clone());
+        assert_eq!(bytes_stood_for(&text), mixed.len());
+    }
+
+    #[test]
+    fn a_letter_split_by_the_end_of_a_line_is_put_back_together() {
+        // The two bytes of an `ä` with a line break between them: neither is
+        // valid where it stands, and with the break taken out they are the
+        // letter again.
+        let written = b"Geh\xC3\n\xA4use".to_vec();
+        let text: Vec<char> = decode(written).chars().filter(|c| *c != '\n').collect();
+        assert_eq!(plain(&text), "Gehäuse");
+    }
+
+    #[test]
+    fn a_private_use_character_of_the_files_own_is_not_taken_for_a_byte() {
+        // U+E041 is three bytes in the file. Read as the byte it would stand
+        // for, the count would be two short and the read out of step.
+        let written = "a\u{E041}b".to_string().into_bytes();
+        let text = decode(written.clone());
+        assert_eq!(bytes_stood_for(&text), written.len());
+        assert_eq!(plain(&text.chars().collect::<Vec<_>>()), "a\u{E041}b");
+    }
+
+    #[test]
+    fn a_byte_is_the_letter_windows_says_it_is() {
+        assert_eq!(letter(0xE4), 'ä');
+        assert_eq!(letter(0x96), '–');
+        assert_eq!(letter(0x80), '€');
+        assert_eq!(letter(b'A'), 'A');
     }
 }
 
