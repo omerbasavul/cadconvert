@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod exact;
 pub mod geom;
 pub mod topo;
 
@@ -33,6 +34,97 @@ pub struct Report {
     pub diagnostics: Vec<(String, Vec<String>)>,
     /// Whether the entity stream stopped early, and where.
     pub truncated: Option<String>,
+    /// What was computed from its definition and what was stood in for.
+    pub definitions: topo::Definitions,
+}
+
+impl Report {
+    /// What a caller should be told: everything in the result that is not
+    /// what the file says, counted, in words. Empty for a file read whole.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(at) = &self.truncated {
+            out.push(format!("the file could not be read to its end: {at}"));
+        }
+        let d = &self.definitions;
+        if d.curves_charted > 0 {
+            out.push(format!(
+                "{} of {} intersection curves could not be computed from the surfaces they are the meeting of; the file's own sample points stand in for them",
+                d.curves_charted, d.curves
+            ));
+        }
+        if d.blends_unbuilt > 0 {
+            out.push(format!(
+                "{} of {} blend surfaces could not be built from their definition",
+                d.blends_unbuilt, d.blends
+            ));
+        }
+        if d.faces_rebuilt > 0 {
+            out.push(format!(
+                "{} faces lie on a surface that could not be read and were rebuilt from their own boundaries",
+                d.faces_rebuilt
+            ));
+        }
+        // The rest by kind: a thing skipped a hundred times is one thing to
+        // know about, said once with its count.
+        let mut kinds: Vec<(String, usize)> = Vec::new();
+        let complaints = self
+            .skipped
+            .iter()
+            .map(|skip| &skip.reason)
+            .chain(self.diagnostics.iter().flat_map(|(_, complaints)| complaints));
+        for complaint in complaints {
+            let kind = generalised(complaint);
+            match kinds.iter_mut().find(|(k, _)| *k == kind) {
+                Some((_, n)) => *n += 1,
+                None => kinds.push((kind, 1)),
+            }
+        }
+        kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        for (kind, n) in kinds {
+            out.push(if n == 1 { kind } else { format!("{kind} ({n} times)") });
+        }
+        out
+    }
+}
+
+/// A complaint with its measurements and entity numbers taken out, so that
+/// the same complaint about two different entities is recognisably the same
+/// complaint. Short whole numbers stay: "surface type 56" is a different
+/// thing to know than "surface type 60".
+fn generalised(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    let mut chars = reason.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii_digit() {
+            out.push(c);
+            continue;
+        }
+        let mut number = String::from(c);
+        while let Some(&next) = chars.peek() {
+            let continues = next.is_ascii_digit()
+                || next == '.'
+                || (matches!(next, 'e' | 'E') && number.contains('.'))
+                || (next == '-' && number.ends_with(['e', 'E']));
+            if !continues {
+                break;
+            }
+            number.push(next);
+            chars.next();
+        }
+        // A sentence's own full stop is not part of the number before it.
+        let stop = number.ends_with('.');
+        let number = number.trim_end_matches('.');
+        if number.len() <= 3 && number.chars().all(|d| d.is_ascii_digit()) {
+            out.push_str(number);
+        } else {
+            out.push('#');
+        }
+        if stop {
+            out.push('.');
+        }
+    }
+    out
 }
 
 /// Errors that prevent lowering entirely.
@@ -131,8 +223,10 @@ fn to_scene_from(
             face_sources,
             body_handle,
             skipped,
+            definitions,
         } = lowered;
         report.skipped.extend(skipped);
+        report.definitions.add(definitions);
         if solid.faces.is_empty() {
             // A body whose every face failed to lower left the scene without a
             // word, and a whole part going missing is not a detail: the file
@@ -559,4 +653,43 @@ fn diagnose(solid: &cad_ir::brep::Solid) -> Vec<String> {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod what_is_said {
+    use super::*;
+
+    #[test]
+    fn a_file_read_whole_has_nothing_to_say() {
+        assert!(Report::default().warnings().is_empty());
+    }
+
+    #[test]
+    fn what_was_stood_in_for_is_counted_and_the_rest_is_said_once_each() {
+        let skip = |entity: usize, reason: &str| topo::Skip { entity, reason: reason.to_string() };
+        let report = Report {
+            definitions: topo::Definitions {
+                curves: 3832,
+                curves_charted: 3,
+                blends: 1447,
+                blends_unbuilt: 2,
+                faces_rebuilt: 2,
+            },
+            skipped: vec![
+                skip(10, "edge 181584: unrecoverable nurbs range (span 3.2e-5, ends 0.00012 apart)"),
+                skip(11, "edge 182237: unrecoverable nurbs range (span 1.0e-6, ends 0.4 apart)"),
+                skip(12, "surface type 56 not lowered yet"),
+            ],
+            ..Default::default()
+        };
+        let said = report.warnings();
+        assert!(said[0].starts_with("3 of 3832 intersection curves"), "{said:?}");
+        assert!(said[1].starts_with("2 of 1447 blend surfaces"), "{said:?}");
+        assert!(said[2].starts_with("2 faces lie on a surface"), "{said:?}");
+        // Two edges, one complaint; and the kind of surface is kept, because
+        // it is what the complaint is about.
+        assert_eq!(said[3], "edge #: unrecoverable nurbs range (span #, ends # apart) (2 times)");
+        assert_eq!(said[4], "surface type 56 not lowered yet");
+        assert_eq!(said.len(), 5);
+    }
 }

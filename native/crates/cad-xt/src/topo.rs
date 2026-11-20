@@ -41,6 +41,38 @@ pub struct Skip {
     pub reason: String,
 }
 
+/// How much of what a file *defines* rather than states was computed from the
+/// definition, and how much something else was stood in for.
+///
+/// A reader that falls back quietly is one nobody can check. Every number
+/// here is a count of things in the result that are not what the file says:
+/// a curve read off its sample points, a surface rebuilt from the edges round
+/// it. They are few, and they are named so that they stay few.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Definitions {
+    /// Intersection curves used by an edge, and how many of them could not
+    /// be computed from their two surfaces and stand on their chart instead.
+    pub curves: usize,
+    pub curves_charted: usize,
+    /// Rolling-ball blends with a face on them, and how many could not be
+    /// built from their definition.
+    pub blends: usize,
+    pub blends_unbuilt: usize,
+    /// Faces whose surface could not be read at all and which were rebuilt
+    /// from their own boundaries.
+    pub faces_rebuilt: usize,
+}
+
+impl Definitions {
+    pub fn add(&mut self, other: Definitions) {
+        self.curves += other.curves;
+        self.curves_charted += other.curves_charted;
+        self.blends += other.blends;
+        self.blends_unbuilt += other.blends_unbuilt;
+        self.faces_rebuilt += other.faces_rebuilt;
+    }
+}
+
 /// One lowered body plus its bookkeeping.
 pub struct LoweredBody {
     pub solid: Solid,
@@ -49,6 +81,7 @@ pub struct LoweredBody {
     /// XT body handle.
     pub body_handle: usize,
     pub skipped: Vec<Skip>,
+    pub definitions: Definitions,
 }
 
 fn ptr(entities: &Entities, e: &RawEntity, i: usize) -> usize {
@@ -95,6 +128,10 @@ fn lower_body(entities: &Entities, body: &RawEntity, index: &Index, default_tol:
         skipped: Vec::new(),
         rolled_faces: Vec::new(),
         blends_that_fell_back: rustc_hash::FxHashSet::default(),
+        fields: crate::exact::Fields::new(entities, index),
+        defined: FxHashMap::default(),
+        swept: FxHashMap::default(),
+        faces_rebuilt: 0,
     };
 
     // The body's shell and region pointers, found by probing: any pointer
@@ -117,9 +154,22 @@ fn lower_body(entities: &Entities, body: &RawEntity, index: &Index, default_tol:
                             if re.type_id != xt::REGION {
                                 break;
                             }
-                            let s = ptr(entities, re, 5);
-                            if s != 0 && index.get(&s).is_some_and(|e| e.type_id == xt::SHELL) {
+                            // A region names its first shell and each shell
+                            // the next: a solid with cavities in it is one
+                            // region bounded by its skin *and* by the wall of
+                            // every cavity. Taking only the first read a
+                            // mannequin as its skin and left the 229 faces of
+                            // 49 cavities inside it unread, without a word —
+                            // nothing looks wrong from outside a body whose
+                            // inside is missing.
+                            let mut s = ptr(entities, re, 5);
+                            let mut chained = rustc_hash::FxHashSet::default();
+                            while s != 0 && chained.insert(s) {
+                                let Some(se) = index.get(&s).filter(|e| e.type_id == xt::SHELL) else {
+                                    break;
+                                };
                                 shells.push(s);
+                                s = ptr(entities, se, 3);
                             }
                             r = ptr(entities, re, 3);
                         }
@@ -153,16 +203,25 @@ fn lower_body(entities: &Entities, body: &RawEntity, index: &Index, default_tol:
     for shell in shells {
         b.lower_shell(shell);
     }
+    b.tell_skin_from_cavities();
     let demoted = b.make_each_blend_of_one_mind();
     if std::env::var_os("XT_BLEND_PROBE").is_some() {
         eprintln!("[demote] {demoted} faces put back on the interpolation their siblings use");
     }
 
+    let definitions = Definitions {
+        curves: b.defined.len(),
+        curves_charted: b.defined.values().filter(|c| c.is_none()).count(),
+        blends: b.swept.len(),
+        blends_unbuilt: b.swept.values().filter(|s| s.is_none()).count(),
+        faces_rebuilt: b.faces_rebuilt,
+    };
     LoweredBody {
         face_sources: b.face_sources,
         skipped: b.skipped,
         solid: b.solid,
         body_handle: body.index,
+        definitions,
     }
 }
 
@@ -195,6 +254,16 @@ struct Lowering<'a> {
     rolled_faces: Vec<(usize, SurfaceId, Vec<Vec<Vec3>>)>,
     /// Blends where at least one face fell back to the interpolation.
     blends_that_fell_back: rustc_hash::FxHashSet<usize>,
+    /// The file's surfaces read as distances, for computing what it defines.
+    fields: crate::exact::Fields<'a>,
+    /// Intersection curves already computed from their definitions, by
+    /// entity; `None` for one that would not compute, so it is asked once.
+    defined: FxHashMap<usize, Option<CurveId>>,
+    /// Blend surfaces already built from their definitions, by entity; `None`
+    /// for one that would not build.
+    swept: FxHashMap<usize, Option<SurfaceId>>,
+    /// Faces rebuilt from their boundaries for want of a surface.
+    faces_rebuilt: usize,
 }
 
 impl<'a> Lowering<'a> {
@@ -209,7 +278,7 @@ impl<'a> Lowering<'a> {
         let Some(se) = self.index.get(&shell) else {
             return;
         };
-        // SHELL: [3]=next is unused here (bodies list their shells), [4]=face.
+        // SHELL: [3]=the next shell of the same region, [4]=face.
         let mut face = ptr(self.entities, se, 4);
         // A shell whose face pointer collides with a non-FACE entity: scan for
         // a face whose shell back-pointer ([6]) is this shell.
@@ -243,6 +312,48 @@ impl<'a> Lowering<'a> {
         });
     }
 
+    /// Mark which of a solid's shells bound cavities.
+    ///
+    /// The file says which region each shell bounds and that the region is
+    /// solid; it does not say which of a solid's shells is the outside of it.
+    /// The outside is the one the others are inside, and that is the one
+    /// that reaches furthest.
+    fn tell_skin_from_cavities(&mut self) {
+        if self.solid.body_type != BodyType::Solid {
+            return;
+        }
+        let reach: Vec<Option<f64>> = self
+            .solid
+            .shells
+            .iter()
+            .map(|shell| {
+                let mut extent = cad_ir::math::Aabb::EMPTY;
+                for fid in &shell.faces {
+                    for bound in &self.solid.face(*fid).bounds {
+                        for h in &bound.halves {
+                            let e = self.solid.edge(h.edge);
+                            extent.add_point(self.solid.vertex(e.start));
+                            extent.add_point(self.solid.vertex(e.end));
+                        }
+                    }
+                }
+                (!extent.is_empty()).then(|| extent.diagonal())
+            })
+            .collect();
+        let Some(skin) = reach
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.map(|r| (i, r)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+        else {
+            return;
+        };
+        for (i, shell) in self.solid.shells.iter_mut().enumerate() {
+            shell.is_void = i != skin && reach[i].is_some();
+        }
+    }
+
     fn lower_face(&mut self, fe: &RawEntity) -> Result<Option<FaceId>, String> {
         // FACE: [2]=tolerance, [5]=loop, [7]=surface, [8]=sense.
         let surface_ptr = ptr(self.entities, fe, 7);
@@ -257,7 +368,11 @@ impl<'a> Lowering<'a> {
                 if std::env::var_os("XT_NO_COONS").is_some() {
                     return Err(reason);
                 }
-                return self.lower_face_as_coons(fe, reason);
+                let rebuilt = self.lower_face_as_coons(fe, reason);
+                if matches!(rebuilt, Ok(Some(_))) {
+                    self.faces_rebuilt += 1;
+                }
+                return rebuilt;
             }
         };
 
@@ -335,6 +450,16 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
+
+        let built_here = self
+            .index
+            .get(&surface_ptr)
+            .is_some_and(|se| se.type_id == xt::BLENDED_EDGE);
+        let same_sense = if built_here {
+            self.sense_from_loops(surface, &bounds).unwrap_or(same_sense)
+        } else {
+            same_sense
+        };
 
         let fid = FaceId(self.solid.faces.len() as u32);
         self.solid.faces.push(Face {
@@ -1967,10 +2092,17 @@ impl<'a> Lowering<'a> {
             let sense = chr(self.entities, fe, 9 - a);
             let pcurve_ptr = ptr(self.entities, fe, 7 - a);
             if edge_ptr == 0 {
-                self.skip(
-                    ptr(self.entities, fe, 0),
-                    "fin names no edge; the loop it belongs to is left open here",
-                );
+                // A loop that is one fin with no edge is not a loop with a
+                // piece missing: it is a point — the vertex a surface closes
+                // to, a fingertip or the apex of a cone — written the only
+                // way a boundary of no length can be. Nothing is left open by
+                // it and nothing is said about it.
+                if cycle.len() > 1 {
+                    self.skip(
+                        ptr(self.entities, fe, 0),
+                        "fin names no edge; the loop it belongs to is left open here",
+                    );
+                }
                 continue;
             }
             // Measured, not assumed: a fin's vertex is the one its edge
@@ -2125,6 +2257,15 @@ impl<'a> Lowering<'a> {
         // all — its geometry lives in each fin's SP_CURVE — so the fin's
         // parameter-space curve, sampled through its face's surface, stands in.
         let curve_ptr = ptr(self.entities, ee, 6);
+        // The edge's own two ends, in the edge's own direction. A fin that
+        // runs against its edge names them the other way round, and anything
+        // built from the ends has to be built in the edge's order, not the
+        // fin's: a blend's cross-section is the arc swept *from* the first
+        // *to* the second, and handed the fin's order it came out, for every
+        // edge whose first fin was a reversed one, as the rest of the circle
+        // — 307 degrees round the back of a one-millimetre ball where the
+        // blend is the 53 in front.
+        let (fwd_start, fwd_end) = if forward { (start, end) } else { (end, start) };
         let tolerant_ok = std::env::var_os("XT_NO_TOLERANT").is_none();
         let mut route = if curve_ptr != 0 { "own-curve" } else { "stand-in" };
         let mut curve_id = if curve_ptr != 0 {
@@ -2142,7 +2283,7 @@ impl<'a> Lowering<'a> {
                     self.intern_tolerant_curve(edge_ptr, fin_pcurve)
                         .map_err(|second| format!("{reason}; {second}"))?
                 }
-                Err(reason) => match self.blend_section(edge_ptr, start, end) {
+                Err(reason) => match self.blend_section(edge_ptr, fwd_start, fwd_end) {
                     Some(id) => {
                         route = "blend-section";
                         id
@@ -2169,15 +2310,13 @@ impl<'a> Lowering<'a> {
                     Err(reason) => last = reason,
                 }
             }
-            match found.or_else(|| self.blend_section(edge_ptr, start, end)) {
+            match found.or_else(|| self.blend_section(edge_ptr, fwd_start, fwd_end)) {
                 Some(id) => id,
                 None => return Err(last),
             }
         } else {
             return Err(format!("edge {edge_ptr} has neither a curve nor a fin pcurve"));
         };
-
-        let (fwd_start, fwd_end) = if forward { (start, end) } else { (end, start) };
 
         let curve = &self.solid.curves[curve_id.index()];
         let (p0, p1, closed_no_vertex) = match (
@@ -2241,6 +2380,41 @@ impl<'a> Lowering<'a> {
             }
         };
 
+        // Two points on a closed curve are joined by two arcs, and the rule
+        // above chooses between them by the curve's sense. A trimmed curve
+        // says which it is outright: its two parameters are arc lengths, and
+        // their difference is how long the piece is. Edge 1661 of
+        // `204 201 013-51` is 0.64 mm of a closed intersection 42 mm round,
+        // written as a window 0.64 mm wide; read by sense it came out as the
+        // other 41 mm, twice round the cone it lies on. Nothing noticed,
+        // because the walk below used to set off towards the far end whatever
+        // the range said, and for a short piece that is the right way — the
+        // range was wrong and the walk hid it. So where the file states the
+        // length, the arc whose own length is nearer to it is the edge.
+        if let (Curve::Polyline { .. } | Curve::Nurbs(_), Some(period)) = (curve, curve.period())
+            && let Some(ce) = self.index.get(&curve_ptr).filter(|e| {
+                e.type_id == xt::TRIMMED_CURVE
+                    && self
+                        .index
+                        .get(&ptr(self.entities, e, 7))
+                        .is_some_and(|b| b.type_id == xt::INTERSECTION)
+            })
+        {
+            let stated = (f64_at(self.entities, ce, 11) - f64_at(self.entities, ce, 10)).abs();
+            let other = Interval::new(range.hi, range.lo + period);
+            if stated.is_finite() && stated > 0.0 && range.span() < period && other.span() > 0.0 {
+                let (here, there) = (length_over(curve, range), length_over(curve, other));
+                if (there - stated).abs() < (here - stated).abs() {
+                    if std::env::var_os("XT_EDGE_TRACE").is_some() {
+                        eprintln!(
+                            "[edge] {edge_ptr}: the trim states {stated:.6} of curve; the arc by sense is {here:.6}, the other {there:.6} — the other is taken"
+                        );
+                    }
+                    range = other;
+                }
+            }
+        }
+
         // Recovery can genuinely fail on an INTERSECTION edge: its chart is
         // the modeller's sparse evaluation of the curve and may not reach the
         // edge's ends at all. The fin's own parameter curve covers exactly
@@ -2276,7 +2450,7 @@ impl<'a> Lowering<'a> {
         // same position.
         let curve = &self.solid.curves[curve_id.index()];
         let unrecoverable = !reaches_ends(curve, range, p0, p1, tolerance);
-        if unrecoverable && let Some(cid) = self.blend_section(edge_ptr, start, end) {
+        if unrecoverable && let Some(cid) = self.blend_section(edge_ptr, fwd_start, fwd_end) {
             curve_id = cid;
             range = self.solid.curves[cid.index()].natural_range();
         }
@@ -2501,6 +2675,11 @@ impl<'a> Lowering<'a> {
         p1: Vec3,
         tolerance: f64,
     ) -> Option<Curve> {
+        // A curve that was computed from its definition is the curve; there
+        // is nothing for a walk to improve.
+        if matches!(curve, Curve::Nurbs(_)) {
+            return None;
+        }
         let ce = self.index.get(&curve_ptr)?;
         let ie = if ce.type_id == xt::TRIMMED_CURVE {
             self.index.get(&ptr(self.entities, ce, 7))?
@@ -2563,16 +2742,30 @@ impl<'a> Lowering<'a> {
         // says. Reverted, and recorded so the next attempt starts here.
         const PROBES: usize = 16;
         let mut widest = 0.0f64;
+        let mut charted = 0.0f64;
         let mut previous = curve.point_at(range.lo);
         for i in 1..=PROBES {
             let q = curve.point_at(range.at(i as f64 / PROBES as f64));
             widest = widest.max((q - previous).length());
+            charted += (q - previous).length();
             previous = q;
         }
         if widest <= tolerance * 20.0 {
             { if std::env::var_os("XT_WALK_TRACE").is_some() { eprintln!("[walk] body#{} curve {curve_ptr} refused at guard 2", BODY_NO.with(|b| b.get())); } return None; }
         }
-        let Some(walked) = geom::intersection_polyline(&a, &b, p0, p1, tolerance) else {
+        // Which way the edge leaves its start: the chart's own first step
+        // across this edge's range. Coarse as the chart is, it runs the way
+        // the curve runs.
+        // The walk starts at `p0`, which is whichever end of the range the
+        // edge starts at — an edge is free to run against its curve.
+        let (lo, hi) = (curve.point_at(range.lo), curve.point_at(range.hi));
+        let setting_off = if (lo - p0).length() <= (hi - p0).length() {
+            curve.point_at(range.at(1.0 / PROBES as f64)) - lo
+        } else {
+            curve.point_at(range.at(1.0 - 1.0 / PROBES as f64)) - hi
+        }
+        .try_normalized();
+        let Some(walked) = geom::intersection_polyline_along(&a, &b, p0, p1, setting_off, tolerance) else {
             give_up!("the walk did not arrive")
         };
 
@@ -2599,7 +2792,19 @@ impl<'a> Lowering<'a> {
         if probe && !on_branch {
             eprintln!("[walk] {curve_ptr}: the walk left the chart's branch");
         }
-        on_branch.then_some(walked)
+        // And it has to have gone all the way. The chart's points are on the
+        // curve, so the chords between them are a path the curve cannot be
+        // shorter than: a walk that comes out shorter took the other arc
+        // between the same two ends, and every point of it can still be near
+        // a chart that goes right round.
+        let walked_length: f64 = points.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        let whole = walked_length >= charted * 0.98 - tolerance;
+        if probe && on_branch && !whole {
+            eprintln!(
+                "[walk] {curve_ptr}: the walk is {walked_length:.5} long where the chart runs {charted:.5}; it took the short way round"
+            );
+        }
+        (on_branch && whole).then_some(walked)
     }
 
     /// Close a loop that lost an edge, so the faces sharing it still meet.
@@ -2880,6 +3085,15 @@ impl<'a> Lowering<'a> {
         let Some(se) = self.index.get(&handle) else {
             return Err(format!("surface {handle} does not exist"));
         };
+        // A rolling-ball blend is the surface its ball sweeps, and that is
+        // built from the blend's own definition: see [`crate::exact`]. Where
+        // it will not build, the refusal below sends the face to be rebuilt
+        // from its boundary, as every blend face used to be.
+        if se.type_id == xt::BLENDED_EDGE
+            && let Some(id) = self.defined_blend(handle)
+        {
+            return Ok(id);
+        }
         let surface = geom::surface(self.entities, se, self.index)?;
         // An SP_CURVE inside this surface references it by XT handle; the
         // lowering rewrites those after interning, so nothing to fix here for
@@ -2895,6 +3109,166 @@ impl<'a> Lowering<'a> {
         Ok(id)
     }
 
+    /// Points of the boundaries of every face that lies on the surface
+    /// `handle`.
+    fn points_on(&mut self, handle: usize) -> Vec<Vec3> {
+        let faces: Vec<usize> = self
+            .entities
+            .iter()
+            .filter(|f| f.type_id == xt::FACE && ptr(self.entities, f, 7) == handle)
+            .map(|f| f.index)
+            .collect();
+        let mut out = Vec::new();
+        for face in faces {
+            let Some(fe) = self.index.get(&face) else { continue };
+            let mut lp = ptr(self.entities, fe, 5);
+            let mut seen = rustc_hash::FxHashSet::default();
+            while lp != 0 && seen.insert(lp) {
+                let Some(le) = self.index.get(&lp).filter(|e| e.type_id == xt::LOOP) else {
+                    break;
+                };
+                // Lowered here or lowered when its own face is reached, an
+                // edge is the same edge: it is interned.
+                if let Ok(Some(bound)) = self.lower_loop(le) {
+                    out.extend(self.boundary_polyline(&bound));
+                }
+                lp = ptr(self.entities, le, 4);
+            }
+        }
+        out
+    }
+
+    /// The surface a BLENDED_EDGE entity defines, built and kept.
+    fn defined_blend(&mut self, blend: usize) -> Option<SurfaceId> {
+        if let Some(known) = self.swept.get(&blend) {
+            return *known;
+        }
+        let built = if std::env::var_os("XT_NO_EXACT").is_some() {
+            None
+        } else {
+            // How far a blend runs is how far its faces do: a centre line
+            // written as a straight line has no ends of its own, and one
+            // written as a chart may stop short of them.
+            let reach = self.points_on(blend);
+            self.fields.blend(blend, &reach).and_then(|b| b.surface(&reach))
+        };
+        if std::env::var_os("XT_EXACT_PROBE").is_some() {
+            match &built {
+                Some(n) => eprintln!("[exact] blend {blend}: built, {} rows of poles", n.control_points.len()),
+                None => eprintln!("[exact] blend {blend}: not built; its faces are rebuilt from their boundaries"),
+            }
+        }
+        let id = built.map(|n| {
+            let id = SurfaceId(self.solid.surfaces.len() as u32);
+            self.solid.surfaces.push(cad_ir::brep::Surface::Nurbs(n));
+            id
+        });
+        self.swept.insert(blend, id);
+        id
+    }
+
+    /// Whether a face's loops run the way its surface's own normal expects.
+    ///
+    /// A face lies to the left of its boundary as seen from outside the
+    /// body, so an outer loop runs anticlockwise about the outward normal: in
+    /// the surface's own parameters, anticlockwise if the surface's normal is
+    /// the outward one and clockwise if it is not. Every other surface here
+    /// has its sense read off two flags, which works because the surface's
+    /// normal is the modeller's own. A blend built here is parameterised as
+    /// this crate chose, so its normal is this crate's too, and the flags say
+    /// nothing about it; the loops do.
+    fn sense_from_loops(&self, surface: SurfaceId, bounds: &[Bound]) -> Option<bool> {
+        let surf = self.solid.surface(surface);
+        let d = surf.domain();
+        let mut best: Option<(f64, f64)> = None; // (|area|, area)
+        let mut rings: Vec<(f64, f64)> = Vec::new(); // (mean v, travel in u)
+        for b in bounds {
+            let ring = self.boundary_polyline(b);
+            if ring.len() < 3 {
+                continue;
+            }
+            let mut uv: Vec<cad_ir::math::Vec2> = Vec::with_capacity(ring.len());
+            for p in &ring {
+                let mut q = surf.invert(*p, uv.last().copied())?;
+                if let (Some(period), Some(prev)) = (d.u_period, uv.last()) {
+                    q.u += period * ((prev.u - q.u) / period).round();
+                }
+                uv.push(q);
+            }
+            // Closing the loop: does it come back to where it began, or a
+            // whole turn on?
+            let mut back = uv[0];
+            if let Some(period) = d.u_period {
+                back.u += period * ((uv[uv.len() - 1].u - back.u) / period).round();
+            }
+            let travel = back.u - uv[0].u;
+            if d.u_period.is_some_and(|period| travel.abs() > period * 0.5) {
+                let mean = uv.iter().map(|q| q.v).sum::<f64>() / uv.len() as f64;
+                rings.push((mean, travel));
+                continue;
+            }
+            let mut area = 0.0;
+            for i in 0..uv.len() {
+                let (a, b) = (uv[i], uv[(i + 1) % uv.len()]);
+                area += a.u * b.v - b.u * a.v;
+            }
+            if best.is_none_or(|(big, _)| area.abs() > big) {
+                best = Some((area.abs(), area));
+            }
+        }
+        if let Some((_, area)) = best
+            && rings.is_empty()
+        {
+            return (area != 0.0).then_some(area > 0.0);
+        }
+        // A band right round a closed blend has no loop that encloses it,
+        // only the two rings it lies between: the lower one runs forward in
+        // `u` with the face above it, exactly when the normal is outward.
+        let lowest = rings.iter().copied().min_by(|a, b| a.0.total_cmp(&b.0))?;
+        let middle = 0.5 * (d.v.lo + d.v.hi);
+        Some(if lowest.0 < middle || rings.len() > 1 { lowest.1 > 0.0 } else { lowest.1 < 0.0 })
+    }
+
+    /// The curve an INTERSECTION entity defines, computed and kept.
+    ///
+    /// `None` when it cannot be — a surface this does not read, a stretch
+    /// that will not close — and the chart then stands, as before.
+    fn defined_curve(&mut self, intersection: usize) -> Option<CurveId> {
+        if let Some(known) = self.defined.get(&intersection) {
+            return *known;
+        }
+        let computed = if std::env::var_os("XT_NO_EXACT").is_some() {
+            None
+        } else {
+            self.fields.intersection(intersection).and_then(|(points, f, g, charted)| {
+                // To the curve's own ends if it will go to them, and as far
+                // as its chart if it will not.
+                let stations = crate::exact::stations(&f, &g, &points).or_else(|| {
+                    (charted.len() < points.len())
+                        .then(|| crate::exact::stations(&f, &g, &points[charted]))
+                        .flatten()
+                })?;
+                crate::exact::cubic(&stations)
+            })
+        };
+        if std::env::var_os("XT_EXACT_PROBE").is_some() {
+            match &computed {
+                Some(c) => eprintln!(
+                    "[exact] curve {intersection}: computed, {} spans",
+                    (c.control_points.len() - 1) / 3
+                ),
+                None => eprintln!("[exact] curve {intersection}: not computed; its chart stands"),
+            }
+        }
+        let id = computed.map(|c| {
+            let id = CurveId(self.solid.curves.len() as u32);
+            self.solid.curves.push(Curve::Nurbs(c));
+            id
+        });
+        self.defined.insert(intersection, id);
+        id
+    }
+
     fn intern_curve(&mut self, handle: usize) -> Result<CurveId, String> {
         if let Some(&c) = self.curves.get(&handle) {
             return Ok(c);
@@ -2902,6 +3276,21 @@ impl<'a> Lowering<'a> {
         let Some(ce) = self.index.get(&handle) else {
             return Err(format!("curve {handle} does not exist"));
         };
+        // An intersection — or a piece trimmed out of one — is the curve its
+        // two surfaces meet along, and that is computed rather than read off
+        // the chart: see [`crate::exact`]. The piece is taken whole, as the
+        // chart of one always has been; which part of it an edge is comes
+        // from the edge's own vertices.
+        let meeting = match ce.type_id {
+            xt::INTERSECTION => Some(handle),
+            xt::TRIMMED_CURVE => Some(ptr(self.entities, ce, 7))
+                .filter(|b| self.index.get(b).is_some_and(|e| e.type_id == xt::INTERSECTION)),
+            _ => None,
+        };
+        if let Some(id) = meeting.and_then(|m| self.defined_curve(m)) {
+            self.curves.insert(handle, id);
+            return Ok(id);
+        }
         let mut curve = geom::curve(self.entities, ce, self.index)?;
         if std::env::var_os("XT_CURVE_TRACE").is_some()
             && let Curve::Polyline { points } = &curve
@@ -2936,6 +3325,35 @@ impl<'a> Lowering<'a> {
 /// end cannot all win; whatever the angles fail to supply is filled in evenly,
 /// which is the right answer for a boundary with no corners at all (a closed
 /// band) and keeps the result defined for every input.
+/// How long a sampled curve is over a range of its own samples.
+///
+/// Along the samples themselves, so it is a length the true curve cannot be
+/// shorter than, and exact for the question it is asked: which of two arcs of
+/// a closed chart a stated length belongs to.
+fn length_over(curve: &Curve, range: Interval) -> f64 {
+    let Curve::Polyline { .. } = curve else {
+        // Anything else is smooth: enough even steps that the chords between
+        // them are the curve for the purpose of telling two arcs apart.
+        const STEPS: usize = 256;
+        return (0..STEPS)
+            .map(|i| {
+                let (a, b) = (range.at(i as f64 / STEPS as f64), range.at((i + 1) as f64 / STEPS as f64));
+                (curve.point_at(b) - curve.point_at(a)).length()
+            })
+            .sum();
+    };
+    let mut total = 0.0;
+    let mut previous = curve.point_at(range.lo);
+    let mut t = range.lo.floor() + 1.0;
+    while t < range.hi {
+        let q = curve.point_at(t);
+        total += (q - previous).length();
+        previous = q;
+        t += 1.0;
+    }
+    total + (curve.point_at(range.hi) - previous).length()
+}
+
 fn quad_corners(ring: &[Vec3]) -> [usize; 4] {
     let n = ring.len();
     let min_gap = (n / 8).max(1);
