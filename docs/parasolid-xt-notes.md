@@ -4657,3 +4657,53 @@ one face at 0.01 mm (285, three edges under two millimetres meeting at a
 corner the mesh leaves out) and seven at 0.005; and at tolerances of 0.2 mm and coarser, two to four faces (four at `--sag 1
 --angle 45`), one of which at `--sag 0.2 --angle 40` is not meshed at all and
 leaves three edges open. None of these was followed to its cause.
+
+### A string's length is in bytes, and a counter is not a pointer (2026-11-20)
+
+Issue #4 reported both from two SolidWorks assemblies that could not be
+attached, with the place in the source for each. Both were as it said, and
+both are rebuilt in `cad-convert/tests/names_and_bodies.rs` on the bundled
+6 KB part.
+
+**A name with a letter outside ASCII put the read out of step.** A string is
+written with its length, and the length is in the file's bytes. The reader
+took that many *characters*. A UTF-8 name with one `ä` is a character shorter
+than its length, so the read took one character too many: the first digit of
+the next entity's type. What was left of the type was then read as a type. On
+the bundled part with one letter changed that was a type the stream could
+not be read as, and the conversion came out with nine faces where there are
+ten, five of them on surfaces that could not be read. On the reported
+assembly it was `1`, the terminator: the stream ended there — by the report,
+416 878 entities of 610 124 read and 416 bodies of 580 in the scene — and
+nothing said so, because a stream that ends at a terminator
+has ended.
+
+The reader now counts bytes. `decode` says how many each character was: a
+character that was valid UTF-8 is itself and counts its own encoding; a byte
+that was not — a letter in the writer's code page — is carried as one of 256
+private-use characters that remember it, and counts one. Once a string is in
+hand its carried bytes are put back together and read as UTF-8 if that is
+what they are — a file wrapped at a fixed width can end a line between the
+two bytes of a letter — and otherwise each is the letter Windows-1252 says,
+where `U+FFFD` used to stand. The header goes through the same.
+
+And a terminator with more of the stream after it is no longer taken at its
+word. Nothing follows a terminator, so one that is followed was not one, and
+the read is reported as stopped there. A type that cannot be read as a number
+is reported the same way; it used to end the read with a line on stderr.
+
+**A body followed its own counters as pointers.** `lower_body` finds a body's
+shells and regions by probing every field for one. `FieldVal::as_ptr`
+answers for a plain integer too, and a body has some: the highest node id it
+has handed out, the offset of its index map. Where such a number was the
+index of another body's shell, that body's faces were lowered into this one
+as well. Only fields the schema calls pointers are probed now.
+
+None of the twelve files here has either. Their outputs are the same to the
+byte before and after, and the terminator check fires on none of them.
+
+Not done from that issue: sub-assembly names, which it says are read only
+where a body owns them; seventeen faces of one body of the reported file that
+"declare one boundary edge and none could be built"; and a panic inside the
+triangulation library that is caught and reported as one failed face. The
+file is needed for the last two.

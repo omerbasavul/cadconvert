@@ -140,7 +140,17 @@ fn lower_body(entities: &Entities, body: &RawEntity, index: &Index, default_tol:
     let mut shells: Vec<usize> = Vec::new();
     let mut body_type_candidates: Vec<u8> = Vec::new();
     for f in entities.fields(body) {
-        let p = f.as_ptr();
+        // Only a field the schema calls a pointer. `as_ptr` answers for a
+        // plain integer as well, and a body carries some — the highest node
+        // id it has handed out, the offset of its index map. Where such a
+        // number happened to be the index of another body's SHELL or REGION
+        // that body's faces were lowered into this one too: a small plate of
+        // one assembly was given every face of a 4.3 m frame member, and
+        // being placed four times, drew it four more times where it is not.
+        let p = match f {
+            xt_parser::entity::FieldVal::Ptr(p) => *p,
+            _ => 0,
+        };
         if p != 0 {
             if let Some(t) = index.get(&p) {
                 match t.type_id {
