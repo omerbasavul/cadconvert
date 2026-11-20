@@ -105,12 +105,20 @@ impl Surface {
                 u_period: profile.period(),
                 v_period: None,
             },
-            Surface::Revolution { profile, .. } => Domain {
-                u: full_turn,
-                v: profile.natural_range(),
-                u_period: Some(TAU),
-                v_period: profile.period(),
-            },
+            Surface::Revolution { profile, .. } => {
+                let v = profile.natural_range();
+                Domain {
+                    u: full_turn,
+                    v,
+                    u_period: Some(TAU),
+                    // A profile wraps only where all of it is spun. An arc of
+                    // an ellipse still reports the ellipse's period — that is
+                    // what brings a parameter back into the arc — but a
+                    // surface spun from the arc has two ends in `v`, and they
+                    // are its poles, not a seam.
+                    v_period: profile.period().filter(|p| (v.span().abs() - p).abs() < 1e-9),
+                }
+            }
             Surface::Offset { base, .. } => base.domain(),
             Surface::RectangularTrimmed { base, u, v } => {
                 let d = base.domain();
@@ -502,6 +510,179 @@ impl Surface {
         }
     }
 
+    /// The parameters of the point of the surface nearest `p`.
+    ///
+    /// [`Surface::invert`] is asked about points that are on the surface, and
+    /// several of its closed forms answer only that question: a cone's gives
+    /// the axial height of `p` itself, which names the nearest point when `p`
+    /// is on the cone and a point up or down the slope from it when it is
+    /// not. This is asked about points that are *off* the surface — how far
+    /// is this from that, and which way — so whatever the first answer is, it
+    /// is walked downhill until the line from `p` to the surface stands square
+    /// to it.
+    ///
+    /// `seed` is where a neighbouring answer was, and is trusted only as far
+    /// as it leads somewhere stationary; otherwise the search starts afresh.
+    pub fn nearest(&self, p: Vec3, seed: Option<Vec2>) -> Option<Vec2> {
+        let d = self.domain();
+        let square = |uv: Vec2| {
+            let gap = self.point_at(uv) - p;
+            let (du, dv) = self.derivatives_at(uv);
+            let reach = gap.length();
+            // At rest when the gap has no component along the surface, or
+            // when what component it has points out of the domain.
+            let along = |t: Vec3, at: f64, range: Interval, period: Option<f64>| {
+                let lean = gap.dot(t);
+                let pinned = period.is_none()
+                    && ((at <= range.lo && lean > 0.0) || (at >= range.hi && lean < 0.0));
+                // How far along the surface the nearest point still is: a
+                // millionth of the gap, or a picometre for a point that is on
+                // the surface already and has no gap to be a fraction of.
+                let slip = lean.abs() / t.length().max(1e-300);
+                pinned || slip <= 1e-6 * reach + 1e-12
+            };
+            along(du, uv.u, d.u, d.u_period) && along(dv, uv.v, d.v, d.v_period)
+        };
+        let settle = |from: Vec2| {
+            let uv = self.newton_towards(p, from, &d);
+            if square(uv) { uv } else { self.newton_to_rest(p, uv, &d) }
+        };
+        if let Some(seed) = seed {
+            let uv = settle(seed);
+            if square(uv) {
+                return Some(uv);
+            }
+        }
+        let start = self.invert(p, None)?;
+        Some(settle(start))
+    }
+
+    /// The nearest point to `p` that can be reached downhill from `seed`, or
+    /// `None` if the descent does not come to rest.
+    ///
+    /// [`Surface::nearest`] searches the whole surface when the seed leads
+    /// nowhere, which is right for a point with no history and wrong for one
+    /// that is being followed: on a surface that passes the same place twice
+    /// the whole-surface answer is the other pass. This one never leaves the
+    /// sheet it started on.
+    pub fn nearest_from(&self, p: Vec3, seed: Vec2) -> Option<Vec2> {
+        let d = self.domain();
+        let at_rest = |uv: Vec2| {
+            let gap = self.point_at(uv) - p;
+            let (du, dv) = self.derivatives_at(uv);
+            let reach = gap.length();
+            let rests = |t: Vec3, at: f64, range: Interval, period: Option<f64>| {
+                let lean = gap.dot(t);
+                let pinned = period.is_none()
+                    && ((at <= range.lo && lean > 0.0) || (at >= range.hi && lean < 0.0));
+                pinned || lean.abs() / t.length().max(1e-300) <= 1e-6 * reach + 1e-12
+            };
+            rests(du, uv.u, d.u, d.u_period) && rests(dv, uv.v, d.v, d.v_period)
+        };
+        let uv = self.newton_towards(p, seed, &d);
+        if at_rest(uv) {
+            return Some(uv);
+        }
+        let uv = self.newton_to_rest(p, uv, &d);
+        at_rest(uv).then_some(uv)
+    }
+
+    /// Newton proper towards the point of the surface nearest `p`.
+    ///
+    /// [`Surface::newton_towards`] takes the step that would be right if the
+    /// surface were flat, which it very nearly is as seen from a point lying
+    /// on it — the case inversion is for. Seen from a point standing off it
+    /// by something like its own radius of curvature, the surface turns under
+    /// the step as fast as the step is taken, and each round closes only a
+    /// fraction of what is left: the centre of a 22 mm ball rolling round the
+    /// inside of a mannequin's hip was still a tenth of a millimetre from its
+    /// nearest point after thirty-two of them. The step that knows how the
+    /// surface turns needs its second derivatives, taken here by difference;
+    /// it is asked only where the plain one has not come to rest.
+    fn newton_to_rest(&self, p: Vec3, start: Vec2, d: &Domain) -> Vec2 {
+        let (hu, hv) = (step_for(d.u), step_for(d.v));
+        let held = |at: f64, range: Interval, period: Option<f64>, slope: f64| {
+            period.is_none() && ((at <= range.lo && slope > 0.0) || (at >= range.hi && slope < 0.0))
+        };
+        // The change in the two first derivatives across a small step, taken
+        // inward where the step would leave a direction that has ends.
+        let second = |uv: Vec2, along_u: bool| -> (Vec3, Vec3) {
+            let (h, range, period, at) = if along_u {
+                (hu, d.u, d.u_period, uv.u)
+            } else {
+                (hv, d.v, d.v_period, uv.v)
+            };
+            let (lo, hi) = if period.is_some() {
+                (at - h, at + h)
+            } else {
+                ((at - h).max(range.lo), (at + h).min(range.hi))
+            };
+            if !(hi > lo) {
+                return (Vec3::ZERO, Vec3::ZERO);
+            }
+            let place = |t: f64| if along_u { Vec2::new(t, uv.v) } else { Vec2::new(uv.u, t) };
+            let (a, b) = (self.derivatives_at(place(lo)), self.derivatives_at(place(hi)));
+            ((b.0 - a.0) * (1.0 / (hi - lo)), (b.1 - a.1) * (1.0 / (hi - lo)))
+        };
+        let mut uv = start;
+        let mut here = (self.point_at(uv) - p).length_squared();
+        for _ in 0..40 {
+            let diff = self.point_at(uv) - p;
+            let (du, dv) = self.derivatives_at(uv);
+            let (e, f) = (diff.dot(du), diff.dot(dv));
+            let (suu, suv) = second(uv, true);
+            let (_, svv) = second(uv, false);
+            let (flat_a, flat_b, flat_c) = (du.dot(du), du.dot(dv), dv.dot(dv));
+            let (mut a, mut b, mut c) = (
+                flat_a + diff.dot(suu),
+                flat_b + diff.dot(suv),
+                flat_c + diff.dot(svv),
+            );
+            // Past its own centre of curvature the surface offers a furthest
+            // point as readily as a nearest; the flat step still heads for
+            // the nearest.
+            if !(a > 0.0 && c > 0.0 && a * c - b * b > 0.0) {
+                (a, b, c) = (flat_a, flat_b, flat_c);
+            }
+            let (held_u, held_v) = (held(uv.u, d.u, d.u_period, e), held(uv.v, d.v, d.v_period, f));
+            let (step_u, step_v) = match (held_u, held_v) {
+                (true, true) => break,
+                (true, false) if c > 1e-300 => (0.0, f / c),
+                (false, true) if a > 1e-300 => (e / a, 0.0),
+                (true, false) | (false, true) => break,
+                (false, false) => {
+                    let det = a * c - b * b;
+                    if det.abs() < 1e-300 {
+                        break;
+                    }
+                    ((e * c - f * b) / det, (a * f - b * e) / det)
+                }
+            };
+            let mut scale = 1.0;
+            let mut moved = None;
+            for _ in 0..10 {
+                let next = Vec2::new(
+                    if d.u_period.is_some() { uv.u - step_u * scale } else { (uv.u - step_u * scale).clamp(d.u.lo, d.u.hi) },
+                    if d.v_period.is_some() { uv.v - step_v * scale } else { (uv.v - step_v * scale).clamp(d.v.lo, d.v.hi) },
+                );
+                let there = (self.point_at(next) - p).length_squared();
+                if there <= here {
+                    moved = Some((next, there));
+                    break;
+                }
+                scale *= 0.5;
+            }
+            let Some((next, there)) = moved else { break };
+            let shift = next - uv;
+            uv = next;
+            here = there;
+            if shift.u.abs() < 1e-15 * d.u.span().abs().max(1.0) && shift.v.abs() < 1e-15 * d.v.span().abs().max(1.0) {
+                break;
+            }
+        }
+        fold_into(uv, d)
+    }
+
     /// The parameter of `p` nearest `seed`, solved locally.
     ///
     /// [`Surface::invert`] answers globally: for a spline it sweeps the whole
@@ -561,9 +742,12 @@ impl Surface {
             const M: usize = 4;
             for i in 0..=M {
                 for j in 0..=M {
-                    let uv = Vec2::new(
-                        (best.u + window.u * (i as f64 / M as f64 - 0.5)).clamp(d.u.lo, d.u.hi),
-                        (best.v + window.v * (j as f64 / M as f64 - 0.5)).clamp(d.v.lo, d.v.hi),
+                    let uv = within(
+                        Vec2::new(
+                            best.u + window.u * (i as f64 / M as f64 - 0.5),
+                            best.v + window.v * (j as f64 / M as f64 - 0.5),
+                        ),
+                        &d,
                     );
                     let at = (self.point_at(uv) - p).length_squared();
                     if at < best_d2 {
@@ -660,16 +844,22 @@ impl Surface {
             const M: usize = 4;
             for i in 0..=M {
                 for j in 0..=M {
-                    let uv = Vec2::new(
-                        (best.u + window.u * (i as f64 / M as f64 - 0.5)).clamp(d.u.lo, d.u.hi),
-                        (best.v + window.v * (j as f64 / M as f64 - 0.5)).clamp(d.v.lo, d.v.hi),
+                    let uv = within(
+                        Vec2::new(
+                            best.u + window.u * (i as f64 / M as f64 - 0.5),
+                            best.v + window.v * (j as f64 / M as f64 - 0.5),
+                        ),
+                        &d,
                     );
                     let at = (self.point_at(uv) - p).length_squared();
                     offer(uv, at, &mut best, &mut best_d2);
                 }
             }
         }
-        Some(best)
+        // A seed can sit outside the domain — a closed spline's first poles
+        // peak before its first knot — and stands for the parameter one period
+        // on. It is that parameter which is handed back.
+        Some(fold_into(best, &d))
     }
 
     /// Gauss-Newton towards `p` from `start`, backtracking on any step that
@@ -680,6 +870,21 @@ impl Surface {
     /// the failure where an overshoot clamps against the domain edge and the
     /// iteration then reports that corner as the answer.
     pub(crate) fn newton_towards(&self, p: Vec3, start: Vec2, d: &Domain) -> Vec2 {
+        // A direction the surface closes in has no edge to stop at: its two
+        // ends are one line, and the nearest point to something just past the
+        // seam is just past the seam. Clamping there held the iteration on
+        // the seam itself, a step short of an answer that lay 0.02 of a
+        // period further on — a mannequin's limbs are closed splines, and 118
+        // of the points its file states to lie *on* them inverted to
+        // somewhere 3–5 mm away, every one of them beside a seam. So a
+        // periodic direction runs free and is folded back afterwards; only a
+        // direction with real ends is held between them.
+        let step_to = |uv: Vec2, du: f64, dv: f64| {
+            Vec2::new(
+                if d.u_period.is_some() { uv.u - du } else { (uv.u - du).clamp(d.u.lo, d.u.hi) },
+                if d.v_period.is_some() { uv.v - dv } else { (uv.v - dv).clamp(d.v.lo, d.v.hi) },
+            )
+        };
         let mut uv = start;
         let mut here = (self.point_at(uv) - p).length_squared();
         for _ in 0..32 {
@@ -687,21 +892,37 @@ impl Surface {
             let (du, dv) = self.derivatives_at(uv);
             let (a, b, c) = (du.dot(du), du.dot(dv), dv.dot(dv));
             let (e, f) = (diff.dot(du), diff.dot(dv));
-            let det = a * c - b * b;
-            if det.abs() < 1e-300 {
-                break;
-            }
-            let step_u = (e * c - f * b) / det;
-            let step_v = (a * f - b * e) / det;
+            // A direction that has run into its end, with the point lying on
+            // past it, has nothing left to give: what remains is a search
+            // along the edge, in the other direction alone. Stepping as if
+            // both were still free and then cutting the step back at the edge
+            // takes the wrong step along it — the two directions are not
+            // square to each other — and creeps: a point 24 mm off the end of
+            // a mannequin's limb was still 0.1 mm from its nearest point on
+            // the limb's edge after thirty-two rounds.
+            let held = |at: f64, range: Interval, period: Option<f64>, slope: f64| {
+                period.is_none() && ((at <= range.lo && slope > 0.0) || (at >= range.hi && slope < 0.0))
+            };
+            let (held_u, held_v) = (held(uv.u, d.u, d.u_period, e), held(uv.v, d.v, d.v_period, f));
+            let (step_u, step_v) = match (held_u, held_v) {
+                (true, true) => break,
+                (true, false) if c > 1e-300 => (0.0, f / c),
+                (false, true) if a > 1e-300 => (e / a, 0.0),
+                (true, false) | (false, true) => break,
+                (false, false) => {
+                    let det = a * c - b * b;
+                    if det.abs() < 1e-300 {
+                        break;
+                    }
+                    ((e * c - f * b) / det, (a * f - b * e) / det)
+                }
+            };
 
             let mut scale = 1.0;
             let mut moved = Vec2::default();
             let mut improved = false;
             for _ in 0..8 {
-                let next = Vec2::new(
-                    (uv.u - step_u * scale).clamp(d.u.lo, d.u.hi),
-                    (uv.v - step_v * scale).clamp(d.v.lo, d.v.hi),
-                );
+                let next = step_to(uv, step_u * scale, step_v * scale);
                 let there = (self.point_at(next) - p).length_squared();
                 if there < here {
                     moved = next - uv;
@@ -719,8 +940,32 @@ impl Surface {
                 break;
             }
         }
-        uv
+        fold_into(uv, d)
     }
+}
+
+/// A parameter to search at: folded across a seam, held at a real edge.
+///
+/// A window swept round a point beside a seam reaches past it, and what lies
+/// past a seam is the far side of the surface, not its edge.
+fn within(uv: Vec2, d: &Domain) -> Vec2 {
+    let folded = fold_into(uv, d);
+    Vec2::new(folded.u.clamp(d.u.lo, d.u.hi), folded.v.clamp(d.v.lo, d.v.hi))
+}
+
+/// Bring a parameter that ran past a seam back into the domain.
+///
+/// Only in a direction that wraps, and only when it is actually outside: a
+/// parameter already in the domain is left exactly as it was, so the far edge
+/// stays the far edge rather than folding onto the near one.
+fn fold_into(uv: Vec2, d: &Domain) -> Vec2 {
+    let fold = |t: f64, range: Interval, period: Option<f64>| match period {
+        Some(p) if p > 0.0 && p.is_finite() && (t < range.lo || t > range.hi) => {
+            (t - ((t - range.lo) / p).floor() * p).clamp(range.lo, range.hi)
+        }
+        _ => t,
+    };
+    Vec2::new(fold(uv.u, d.u, d.u_period), fold(uv.v, d.v, d.v_period))
 }
 
 /// The narrowest gap between distinct knots inside a spline's domain.
@@ -806,31 +1051,62 @@ fn nurbs_parameter(n: &NurbsSurface, u: f64, v: f64) -> (f64, f64) {
     )
 }
 
+/// The rows of the control net that a point at `u` is blended from.
+///
+/// A B-spline is local: `degree + 1` rows reach any one parameter and the rest
+/// are multiplied by nothing. Evaluating every row and then discarding all but
+/// four is the same answer to the bit, and on a limb written as 368 rows it is
+/// ninety times the work — which, with an inversion costing a few hundred
+/// evaluations and a boundary a few thousand inversions, was most of the two
+/// minutes one mannequin took to read.
+///
+/// One row wider than de Boor reads on each side, so that this never has to
+/// agree with its span search about a parameter sitting exactly on a knot.
+fn rows_reaching(n: &NurbsSurface, u: f64) -> std::ops::Range<usize> {
+    let count = n.control_points.len();
+    if count == 0 || n.u_knots.len() <= count {
+        return 0..count;
+    }
+    let span = nurbs::find_span(&n.u_knots, n.u_degree, count, u);
+    span.saturating_sub(n.u_degree + 1)..(span + 2).min(count)
+}
+
+/// One control point of a surface in homogeneous form.
+fn weighted(n: &NurbsSurface, i: usize, j: usize) -> [f64; 4] {
+    let p = n.control_points[i][j];
+    let w = if n.weights.is_empty() {
+        1.0
+    } else {
+        n.weights.get(i).and_then(|r| r.get(j)).copied().unwrap_or(1.0)
+    };
+    [p.x * w, p.y * w, p.z * w, w]
+}
+
+/// Room for the rows that reach one parameter, without asking the heap:
+/// enough for degree eleven, with the row to spare each side.
+const REACH: usize = 14;
+
 fn nurbs_surface_point(n: &NurbsSurface, u: f64, v: f64) -> Vec3 {
     // Evaluate along v for each u row, then along u through the results — the
-    // standard tensor-product evaluation.
-    let rational = !n.weights.is_empty();
-    let rows: Vec<[f64; 4]> = n
-        .control_points
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let hom: Vec<[f64; 4]> = row
-                .iter()
-                .enumerate()
-                .map(|(j, p)| {
-                    let w = if rational {
-                        n.weights.get(i).and_then(|r| r.get(j)).copied().unwrap_or(1.0)
-                    } else {
-                        1.0
-                    };
-                    [p.x * w, p.y * w, p.z * w, w]
-                })
-                .collect();
-            nurbs::de_boor(n.v_degree, &hom, &n.v_knots, v)
-        })
-        .collect();
-    let c = nurbs::de_boor(n.u_degree, &rows, &n.u_knots, u);
+    // standard tensor-product evaluation. Only the rows that reach this `u`
+    // are evaluated, and of each only the points that reach this `v`; the
+    // rest are multiplied by nothing, and are answered with nothing.
+    let reach = rows_reaching(n, u);
+    let mut inline = [[0.0f64; 4]; REACH];
+    let mut spilled: Vec<[f64; 4]>;
+    let rows: &mut [[f64; 4]] = if reach.len() <= REACH {
+        &mut inline[..reach.len()]
+    } else {
+        spilled = vec![[0.0f64; 4]; reach.len()];
+        &mut spilled
+    };
+    for (slot, i) in rows.iter_mut().zip(reach.clone()) {
+        let across = n.control_points[i].len();
+        *slot = nurbs::de_boor_by(n.v_degree, across, |j| weighted(n, i, j), &n.v_knots, v);
+    }
+    let rows = &*rows;
+    let row = |i: usize| if reach.contains(&i) { rows[i - reach.start] } else { [0.0; 4] };
+    let c = nurbs::de_boor_by(n.u_degree, n.control_points.len(), row, &n.u_knots, u);
     if c[3].abs() < 1e-300 {
         Vec3::new(c[0], c[1], c[2])
     } else {
@@ -839,37 +1115,28 @@ fn nurbs_surface_point(n: &NurbsSurface, u: f64, v: f64) -> Vec3 {
 }
 
 fn nurbs_surface_derivatives(n: &NurbsSurface, u: f64, v: f64) -> (Vec3, Vec3) {
-    let rational = !n.weights.is_empty();
-    let hom_rows: Vec<Vec<[f64; 4]>> = n
-        .control_points
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            row.iter()
-                .enumerate()
-                .map(|(j, p)| {
-                    let w = if rational {
-                        n.weights.get(i).and_then(|r| r.get(j)).copied().unwrap_or(1.0)
-                    } else {
-                        1.0
-                    };
-                    [p.x * w, p.y * w, p.z * w, w]
-                })
-                .collect()
-        })
-        .collect();
-
-    // Along v: value and derivative of each u row.
-    let mut row_val = Vec::with_capacity(hom_rows.len());
-    let mut row_dv = Vec::with_capacity(hom_rows.len());
-    for row in &hom_rows {
-        let (val, d) = nurbs::de_boor_with_derivative(n.v_degree, row, &n.v_knots, v);
-        row_val.push(val);
-        row_dv.push(d);
+    // Along v: value and derivative of each u row that reaches this `u`. The
+    // rest are nothing and are never read — see `rows_reaching`.
+    let reach = rows_reaching(n, u);
+    let mut inline = [([0.0f64; 4], [0.0f64; 4]); REACH];
+    let mut spilled: Vec<([f64; 4], [f64; 4])>;
+    let rows: &mut [([f64; 4], [f64; 4])] = if reach.len() <= REACH {
+        &mut inline[..reach.len()]
+    } else {
+        spilled = vec![([0.0f64; 4], [0.0f64; 4]); reach.len()];
+        &mut spilled
+    };
+    for (slot, i) in rows.iter_mut().zip(reach.clone()) {
+        let across = n.control_points[i].len();
+        *slot = nurbs::de_boor_with_derivative_by(n.v_degree, across, |j| weighted(n, i, j), &n.v_knots, v);
     }
+    let rows = &*rows;
+    let count = n.control_points.len();
+    let row_val = |i: usize| if reach.contains(&i) { rows[i - reach.start].0 } else { [0.0; 4] };
+    let row_dv = |i: usize| if reach.contains(&i) { rows[i - reach.start].1 } else { [0.0; 4] };
 
-    let (s, s_u) = nurbs::de_boor_with_derivative(n.u_degree, &row_val, &n.u_knots, u);
-    let s_v = nurbs::de_boor(n.u_degree, &row_dv, &n.u_knots, u);
+    let (s, s_u) = nurbs::de_boor_with_derivative_by(n.u_degree, count, row_val, &n.u_knots, u);
+    let s_v = nurbs::de_boor_by(n.u_degree, count, row_dv, &n.u_knots, u);
 
     // Divide out the weight, applying the quotient rule to each direction.
     let w = s[3];
