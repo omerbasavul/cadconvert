@@ -1187,7 +1187,33 @@ pub fn base_version0_schema(type_id: u16) -> Option<EntitySchema> {
 /// by dumping those diffs from `500.076.x_t` / `500.078.x_t` / `500.081.x_t`,
 /// where only BODY (12), LIST (70) and POINTER_LIS_BLOCK (74) differ; every
 /// other type annotates as `255` (base as-is).
+///
+/// The changes did not all arrive at once. Three files say when, and only
+/// three, so each change is dated to the lowest version it has been *seen*
+/// in and the versions between are a guess that errs towards the older
+/// layout:
+///
+/// | | V10 `500.079UB` | V14 `501.670` | V20+ |
+/// |---|---|---|---|
+/// | FIN has its attributes pointer | no | yes | yes |
+/// | ATTRIB_DEF has field_names, 14 owners | no | yes | yes |
+/// | LIST in its newer order | no | yes | yes |
+/// | POINTER_LIS_BLOCK's extra leading field | no | no | yes |
+/// | BODY's four index-map fields | no | no | yes |
+///
+/// `501.670.x_t` is a SolidWorks 2024 assembly saved against schema 14, and
+/// read as V10 — which "below twenty" used to mean — it stopped at its third
+/// entity: a LIST in the newer order, whose `T` for `notransmit` is not a
+/// number. Nothing after it was read, the scene was empty, and the only word
+/// about it was that there was nothing to write.
 pub fn standard_schema(type_id: u16, key_major: u32) -> Option<EntitySchema> {
+    // What V14 already has of V20, and what it does not yet.
+    if (14..20).contains(&key_major) {
+        return match type_id {
+            FIN | ATTRIB_DEF | LIST => standard_schema(type_id, 20),
+            _ => standard_schema(type_id, 10),
+        };
+    }
     if key_major < 20 {
         return match type_id {
             // FIN carries no attributes_features pointer before V20 — the
@@ -2017,5 +2043,31 @@ fn field_type_from_id(id: u16) -> FieldType {
         1012 => P,  // pointer to finger_block
         1040 => P,  // pointer to owner
         _ => D,     // fallback: treat as integer
+    }
+}
+
+#[cfg(test)]
+mod layout_dates {
+    use super::*;
+
+    fn layout(type_id: u16, version: u32) -> (usize, bool) {
+        let schema = standard_schema(type_id, version).expect("a layout");
+        (schema.fields.len(), schema.is_variable)
+    }
+
+    #[test]
+    fn a_schema_between_ten_and_twenty_has_some_of_each() {
+        // `501.670.x_t` is written against schema 14. Its fins, attribute
+        // definitions and lists are laid out as V20 lays them out; its bodies
+        // and pointer blocks as V10 does. Read wholly as either, it stops
+        // within the first few thousand entities.
+        for newer in [FIN, ATTRIB_DEF, LIST] {
+            assert_eq!(layout(newer, 14), layout(newer, 20), "type {newer} at V14");
+            assert_ne!(layout(newer, 14), layout(newer, 10), "type {newer} at V14");
+        }
+        for older in [BODY, POINTER_LIS_BLOCK] {
+            assert_eq!(layout(older, 14), layout(older, 10), "type {older} at V14");
+            assert_ne!(layout(older, 14), layout(older, 20), "type {older} at V14");
+        }
     }
 }
