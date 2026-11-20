@@ -300,6 +300,12 @@ pub fn convert_many(
     // What is there to write, whichever reader put it there: the tessellator's
     // count is only the triangles it made, and a glTF arrives with its own.
     summary.triangles = scene.stored_triangle_count();
+    if report.faces_from_boundary > 0 {
+        warnings.push(format!(
+            "{} of {} faces were meshed from their boundaries rather than from their surfaces",
+            report.faces_from_boundary, summary.faces
+        ));
+    }
     if !report.failed.is_empty() {
         warnings.push(format!(
             "{} of {} faces could not be meshed",
@@ -396,8 +402,23 @@ fn read_scene(input: &Path, options: &Options) -> Result<(cad_ir::Scene, Vec<Str
             let opts = cad_xt::LowerOptions {
                 materials: options.materials.clone(),
             };
-            let (scene, _report) = cad_xt::scene_from_file(input, &opts).map_err(|e| failed(&e))?;
-            Ok((scene, Vec::new()))
+            // What the reader could not take from the file as written is
+            // said, not kept: a conversion that stood something in for a
+            // curve or a surface and reported nothing looks exactly like one
+            // that did not have to.
+            let (scene, report) = cad_xt::scene_from_file(input, &opts).map_err(|e| failed(&e))?;
+            // A stream that stopped before its first body leaves an empty
+            // scene, and an empty scene used to get as far as the writer,
+            // which could only say there was nothing to write. Why there was
+            // nothing is known here, so it is said here.
+            if scene.geometry.is_empty()
+                && let Some(at) = &report.truncated
+            {
+                return Err(failed(&format!(
+                    "nothing in it could be read: the entity stream stopped early ({at})"
+                )));
+            }
+            Ok((scene, report.warnings()))
         }
         Format::Step => {
             let file = cad_step::StepFile::open(input).map_err(|e| failed(&e))?;

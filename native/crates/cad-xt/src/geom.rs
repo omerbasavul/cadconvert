@@ -113,8 +113,20 @@ pub fn surface(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Surf
                 .ok_or("SPUN_SURF has no profile curve")?;
             let axis_point = v3(entities, e, 8);
             let axis_dir = v3(entities, e, 9);
+            let whole = curve(entities, profile, index)?;
+            // start[10], end[11], start_param[12], end_param[13]: where the
+            // profile meets the axis, and so how much of it is spun.
+            let pole = |i: usize| {
+                let p = v3(entities, e, i);
+                p.is_finite().then_some(p)
+            };
+            let spun = spun_profile(
+                whole,
+                (pole(10), f64_at(entities, e, 12)),
+                (pole(11), f64_at(entities, e, 13)),
+            );
             Ok(Surface::Revolution {
-                profile: Box::new(curve(entities, profile, index)?),
+                profile: Box::new(spun),
                 frame: Frame::new(axis_point, axis_dir, axis_dir.any_perpendicular()),
             })
         }
@@ -188,6 +200,59 @@ pub fn surface(entities: &Entities, e: &RawEntity, index: &Index) -> Result<Surf
         // were closed. The Coons rebuild those faces fall back to is within
         // 15 µm of the STEP reading of the same fillets.
         other => Err(format!("surface type {other} not lowered yet")),
+    }
+}
+
+/// The part of a spun surface's profile that is actually spun.
+///
+/// A profile that crosses its own axis is not spun whole. An ellipsoid is a
+/// *half* ellipse turned through a full circle — pole to pole — and the file
+/// says so: `start` and `end` are the two points where the profile meets the
+/// axis, `start_param` and `end_param` the profile's parameters there. Either
+/// end may be absent, when the profile meets the axis at one end only or not
+/// at all.
+///
+/// Spinning the whole ellipse instead draws the same ellipsoid twice over, and
+/// that is not harmless: every point of it then has two parameter pairs, half
+/// a turn apart, and the middle of the profile's range — which is what an
+/// inversion measures the angle from — falls exactly on a pole, where there is
+/// no angle to measure. A mannequin's fingertips and knuckles are such
+/// surfaces, 14 of them, and the points its own file states to lie on them
+/// inverted to places up to 16 mm away; every face on one was then trimmed
+/// against a boundary that had nothing to do with it.
+///
+/// The stated parameter is used where it lands on the stated pole, which is
+/// the check that our reading of the curve is parameterised as the file's is.
+/// Where it does not — a profile that reached us as sampled points, indexed by
+/// sample — the pole itself is inverted onto the curve instead.
+fn spun_profile(whole: Curve, start: (Option<Vec3>, f64), end: (Option<Vec3>, f64)) -> Curve {
+    let natural = whole.natural_range();
+    let reach = (whole.point_at(natural.hi) - whole.point_at(natural.lo)).length().max(
+        (whole.point_at(natural.at(0.5)) - whole.point_at(natural.lo)).length(),
+    );
+    let at = |(pole, stated): (Option<Vec3>, f64)| -> Option<f64> {
+        match pole {
+            Some(p) => {
+                let lands = |t: f64| (whole.point_at(t) - p).length() <= reach * 1e-6;
+                if stated.is_finite() && lands(stated) {
+                    Some(stated)
+                } else {
+                    whole.param_of(p, None).filter(|t| lands(*t))
+                }
+            }
+            None => stated.is_finite().then_some(stated),
+        }
+    };
+    let (lo, hi) = match (at(start), at(end)) {
+        (None, None) => return whole,
+        (lo, hi) => (lo.unwrap_or(natural.lo), hi.unwrap_or(natural.hi)),
+    };
+    if !(hi > lo) {
+        return whole;
+    }
+    Curve::Trimmed {
+        range: Interval::new(lo, hi),
+        base: Box::new(whole),
     }
 }
 
@@ -328,6 +393,26 @@ pub fn intersection_polyline(
     to: Vec3,
     tolerance: f64,
 ) -> Option<Curve> {
+    intersection_polyline_along(a, b, from, to, None, tolerance)
+}
+
+/// The same walk, told which way to set off.
+///
+/// Two points on a closed curve are joined by two arcs, and "towards the far
+/// end" names the shorter. An edge may be the longer: a ring written as two
+/// edges is a short arc and the rest of the circle, and walked the short way
+/// both of them come out as the same few millimetres — a lens where a ring
+/// belongs, and the face it bounds then has a boundary that encloses nothing.
+/// The chart is coarse, but it runs the way the curve runs, and `setting_off`
+/// is its direction at the start.
+pub fn intersection_polyline_along(
+    a: &Surface,
+    b: &Surface,
+    from: Vec3,
+    to: Vec3,
+    setting_off: Option<Vec3>,
+    tolerance: f64,
+) -> Option<Curve> {
     // Land a point on both surfaces at once, and say where it landed on each.
     // The parameters are handed back for the tangent, not fed forward as a
     // hint: seeding the next inversion from the last one is faster and was
@@ -371,11 +456,15 @@ pub fn intersection_polyline(
     let mut points = vec![from];
     let mut p = start;
     let mut heading = along(va, vb)?;
-    if heading.dot(to - from) < 0.0 {
+    if heading.dot(setting_off.unwrap_or(to - from)) < 0.0 {
         heading = -heading;
     }
+    // Leaving the start the long way round, the far end is behind the walk
+    // and may be nearer than one step: arriving is only meant once the walk
+    // has gone somewhere.
+    let mut gone = 0.0f64;
     for _ in 0..512 {
-        if (p - to).length() <= step {
+        if (p - to).length() <= step && (setting_off.is_none() || gone > step) {
             break;
         }
         let Some((next, off, na, nb)) = settle(p + heading * step, (Some(va), Some(vb))) else {
@@ -398,6 +487,7 @@ pub fn intersection_polyline(
         if turn < 0.02 {
             step = (step * 1.3).min(span / 8.0);
         }
+        gone += moved.length();
         p = next;
         va = na;
         vb = nb;
@@ -1125,7 +1215,7 @@ pub fn pcurve_of(entities: &Entities, e: &RawEntity, index: &Index) -> Option<Cu
 /// schema declares), and the remaining points are bare `x y z` runs in the
 /// variable tail — measured on the Solid Edge corpus, where a three-point
 /// chart is `fields[6] = p₀` plus six floats.
-fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
+pub(crate) fn chart_points(entities: &Entities, chart: &RawEntity) -> Vec<Vec3> {
     let mut out = Vec::new();
     // Field 6 is the chart's first point. The schema calls it `hvec`, and
     // leaving it out was measured: `chart_count` counts it, 5,357 of 5,357

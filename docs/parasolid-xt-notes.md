@@ -4264,3 +4264,313 @@ retention. That is the number a long-running service should budget for, and
 `bench/CadConvert.Bench` is how to get it on any platform: peak
 resident comes from `getrusage(RUSAGE_SELF)` on Unix and `PeakWorkingSet64` on
 Windows, because .NET has no one way to ask and the macOS answer is zero.
+
+## A definition is computed, not stood in for (2026-11-17)
+
+Issue #3 was a mannequin: 323 faces of limbs and fillets, two of them
+unmeshed, dents at the hands and hairline, and 113 seconds to say so. Every
+symptom came from the same place. Three kinds of geometry in a `.x_t` are not
+written out but *defined* — an intersection curve is where two surfaces meet,
+an offset is a surface moved along its normal, a rolling-ball blend is what a
+ball sweeps between two surfaces — and the reader had been standing something
+in for each: the chart for the curve, a grid or a Coons patch for the blend.
+`cad-xt/src/exact.rs` computes them instead. Its own header says how; this is
+what the files had to say on the way, and what it measured.
+
+**Every surface is read as a distance.** A `Field` answers, of any point, how
+far it is from the surface and which way is away, and each definition is then
+a statement about distances: a curve is where two fields vanish together, a
+blend's centre line is where two are both the radius. Between two points of a
+chart the curve is the one place, in the plane half way along, where both
+vanish — Newton from a chord's bow away. The stations are joined by cubics
+that leave each in the curve's own direction (the cross product of the two
+normals, which the solve already has), and a span is halved until its middle
+is on both fields to `1e-8` m. The mannequin's 621 intersections all compute.
+
+**The chart stops short of the curve's end, and the end is in the file.** A
+`LIMIT` (41) has a kind. `L` and `H` are the chart's own end point. `T` is a
+*terminator*: the place two surfaces come to touch rather than cross, where a
+curve's direction is the cross product of two normals that have become one.
+The modeller does not chart what it cannot take a direction at, so the chart
+ends before it — by up to **0.52 mm** on the mannequin (91 limits), 0.096 mm on
+the pilot (482) — and the terminator's own point is field 2 of the limit.
+Without it a blend closing to nothing between two limbs stopped a third of a
+millimetre short of its own corner. With it, 379 of the mannequin's 383 loops
+sit within a micron of their surfaces and the other four within ten.
+
+**A spline carries on past its edge in a straight line.** Offsets and blends
+are taken of the whole sheet, up to 50 mm off the end of a limb. Carried
+tangentially — with the twist term past a corner — a centre line's own points
+read as the radius to thirteen places 40 mm out; carried as the polynomial the
+last span is, a millimetre out already misses by eight microns.
+
+**Which side is read off the file's points, and "nearest" is the wrong
+question.** A 2 mm ball against a 1 mm cylinder, rolled from the side the
+cylinder curves away from, has its centre a millimetre *past the axis* — on
+the cylinder's far wall, at no distance from it at all, and two millimetres
+along a normal that is not the nearest one. A surface with a formula has all
+its normals through a point to offer (two for a cylinder or a cone, four for a
+torus), and a reading is taken on the one the caller expects. The same holds
+for a ball rolled against another blend from inside it.
+
+**A blend of no radius is an edge, and `E` is a ball rolled against one.** A
+cliff-edge blend names as its first surface a `BLENDED_EDGE` of type `R` whose
+two ranges are `0.0`: the limit of a rolling ball between the two surfaces
+that meet at the edge, which is the edge. Read as a field it is the distance
+from a curve, and nothing else about an `E` blend differs from an `R`. A
+centre line may also be written as what it is — `LINE`, `CIRCLE`, `ELLIPSE`,
+`B_CURVE` — with no chart; a straight one has no ends, and is as long as the
+faces on the blend. Of the pilot's 2 211 blends, 1 344 read before these and
+**2 182** after.
+
+**The blend surface is built.** Each section is the arc between the ball's two
+contacts, which a rational quadratic is exactly (two where it opens past
+99°); along the centre line the sections are joined by cubics that leave each
+as fast as it is really changing, and a span is divided until its middle and
+quarters are the radius from the centre line and on the two blended surfaces
+to `1e-8` m. All 83 of the mannequin's blends build and check at points they
+were not built from; 1 436 of the pilot's 1 447. One span in the mannequin is
+accepted unchecked at 13 µm long, over a jump in the curvature of a blended
+surface, and is 0.21 µm out — the one place this is not what it says. (It
+was; see the next section.)
+
+**Three old faults the stand-ins had been hiding.**
+
+* A blend's cross-section edge was built from its ends in the *fin's* order
+  and ranged in the *edge's*. For every such edge whose first fin ran against
+  it the arc came out as the rest of the circle: 307° round the back of a 1 mm
+  ball where the blend is the 53° in front. Rebuilt from its boundary, the
+  face bulged; on its real surface it could not be placed at all.
+* The nearest *sample* of a curve is not always in the nearest *basin*. A
+  closed blend boundary on `204 201 013-51` runs out along a slot and back
+  0.12 mm away; a vertex on one pass inverted onto the other, and a 0.5 mm
+  edge became the other 50 mm of the curve. Every dip in the sweep is now
+  closed in on and the nearest result kept.
+* `thin()` could divide a chord for ever where the points between its ends sat
+  exactly on it but turned past the angle limit — a 128 GiB allocation on the
+  first file exact enough to produce such a chord.
+
+**And one about cost.** A NURBS evaluation allocated and zeroed a row for
+every row of the control net, and built the derivative's whole control polygon,
+to read four of each. On a blend of 1 267 rows that was most of the work, and
+half of all lowering time was the heap. Control points are now asked for one
+at a time and nothing is allocated: the mannequin's lowering went from 41 s to
+12 s, bit for bit the same.
+
+| | before | after |
+|---|---:|---:|
+| mannequin, faces meshed | 321 / 323 | **323 / 323** |
+| mannequin, open / non-manifold edges | 27 / 18 | **0 / 0** |
+| mannequin, time | 112.8 s | **11.9 s** |
+| pilot, open / non-manifold edges | 0 / 10 | 0 / **2** |
+| pilot, triangles with no area | 46 | **0** |
+| pilot, time | 19.4 s | 23.3 s |
+| `517.267`, triangles | 44 076 | 30 824 |
+
+330 tests pass.
+
+**What is still stood in for, counted.** On the pilot: 11 blends with faces do
+not build and 8 do not read — each a ball rolled against another blend past
+where that one has run out — and 23 edge curves keep their chart. A boundary
+of a cliff-edge blend on its edge side is not yet read as a field. The
+tessellator still rebuilds 61 of the pilot's 11 214 faces from their
+boundaries and four of the mannequin's: two planes, which lose nothing by it,
+and two blend faces where a 9 µm edge the file itself leaves between a track
+and a cap folds the boundary back on itself in the blend's parameters. The mannequin's body has a hundred shells and one is read:
+229 faces of internal voids are not. And the pilot is four seconds slower than
+it was, all of it in lowering, which is one body at a time.
+
+## What was stood in for is said, and four more things were (2026-11-19)
+
+The question after the last section was whether a Parasolid file is now read
+whole, with nothing made up. It was not, and worse, a conversion could not
+say so: `cad_convert` took the reader's report and dropped it. A file read
+perfectly and a file with eleven blends rebuilt from their edges printed the
+same line.
+
+**The report is now the conversion's warnings.** `cad_xt::Report` counts what
+a file defines and how much of it was computed — `topo::Definitions`: curves
+and how many kept their chart, blends and how many did not build, faces
+rebuilt for want of a surface — and `Report::warnings()` puts those first, in
+words, then everything the reader skipped, one line per *kind* with its
+count. The tessellator counts the curved faces it meshed from their
+boundaries. A file that stops before its first body is now a read error that
+says where it stopped, instead of an empty scene the writer could only refuse.
+A loop that is one fin with no edge is no longer reported: it is a vertex, the
+point a surface closes to, and nothing is missing from it.
+
+**Schema 14 is neither 10 nor 20.** `501.670.x_t` — SolidWorks 2024, saved
+against `SCH_1400000_140000` — produced nothing at all. "Below twenty" meant
+the V10 layouts, and its third entity is a LIST in the V20 order whose
+`notransmit` is the letter `T`. Read as V20 throughout it stops later, at a
+pointer block. It has FIN, ATTRIB_DEF and LIST as V20 and BODY and
+POINTER_LIS_BLOCK as V10; `standard_schema` now dates each change to the
+lowest version it has been seen in. 5 bodies, 167 faces, closed.
+
+**A solid's region has more than one shell.** A region names its first shell
+and each shell the next. The reader took the first: a mannequin's skin, 323
+faces, and not the 229 faces of the 49 cavities inside it, which are the same
+region's boundary. They are read now — 552 of 552 — and a solid's shells are
+marked skin or cavity by which reaches furthest, the file not saying.
+
+**Every blend, each of the last a different thing.**
+
+* A step limit that had been widened for edges (a blend of no radius cannot
+  limit a step to its radius) had been widened for every blend, and a 0.5 mm
+  cliff blend's centre solve leapt to the mirror-image centre line on the
+  other side of its edge. Six blends that rolled against one read 0.919 mm
+  from it instead of 1.000.
+* A swept surface is carried past the end of its profile as a patch is past
+  its last knot; `204 201 013-51` has a 0.2 mm blend whose centre line starts
+  2.8 mm before the profile it rolls on does. The same rule for a *spun*
+  surface was tried and is wrong — seven of the mannequin's curves stopped
+  closing — and is not there.
+* Points that bear witness to which side a centre line is on are read each
+  from nothing. Read one after another they follow one another, and one that
+  lands on the wrong end of a surface takes the rest with it.
+* Where three blends meet at a corner the ball does not travel, it turns: its
+  centre moves two microns while its contacts swing a millimetre. A span is
+  as long as its fastest pole travels, and the surface's parameter runs with
+  that.
+* **A section's rate of change is taken against the surface's own travel, not
+  the centre's.** Where a blend closes, its two contacts come together as the
+  square root of what is left of the centre line; against the centre's travel
+  the sections change without limit and no cubic follows them — a span was
+  halved to a tenth of a nanometre and still did not hold. Against the travel
+  of the section's fastest point they change at an ordinary rate to the end.
+  This also retired the one span of the mannequin that had been 0.21 µm out:
+  all 83 of its blends now check within 4 nm.
+* **A blend read as a surface is read by way of its own centre line**, laid
+  once and shared by every reading of that blend. Solving for the section
+  through a point asks three things of the centre at once, and the third —
+  that the point be abeam — fails exactly where two blends of the pilot end:
+  a ball sitting in the hole of a blend that runs round a boss is abeam of
+  all of it. The distance to the line has hardly changed there, and is all a
+  reading wants. The centre is still settled exactly from where the laid line
+  puts it; a boundary of a blend is found from the difference of two readings
+  and will not stand a line that is only right to a hundredth of a micron.
+* Carrying that laid line *on* past its chart, to give a ball rolled against
+  the blend room, was tried twice and is not there: by the radius it walked a
+  cliff blend's line onto its own mirror image, and by any amount it offers a
+  far end that is nearer a point than the right place is.
+* A centre line is taken as far as its chart can be *read*, and a surface
+  that then stops short of a face on it is refused rather than offered. Where
+  a blend closes to a point the section there is put at the point, and the
+  last stretch before it — 12 and 36 µm wide on the two blends that need it —
+  is the cubic between a section that is exact and a point that is, unchecked.
+
+One fault was introduced and caught on the way, and is the reason the
+boundary residual is now run after every change and not only at the end: a
+closing section given no rate of change at all left the surface standing
+still in both directions at its tip, a point no slope leads to. Every blend
+still built and still checked against its definition; six of the mannequin's
+faces were 6 to 34 mm off the surface they were said to lie on.
+
+| pilot | 2026-11-17 | now |
+|---|---:|---:|
+| blend definitions read, of 2 211 | 2 182 | **2 211** |
+| blends with faces not built, of 1 447 | 11 | **0** |
+| edge curves left on their chart, of 3 832 | 23 | **1** |
+| faces rebuilt for want of a surface | 11 | **0** |
+| curved faces meshed from their boundaries | 53 | 42 |
+| time against the build before any of this | 23.3 / 19.4 s | 26.6 / 23.1 s |
+
+Built blends are checked at points they were not built from: the mannequin's
+83 within 4 nm, the pilot's 1 447 within 10 nm but for the two closing spans,
+where the worst is 31 nm. The carried patch's slopes are now written down
+rather than measured by stepping — three fifths of the pilot's reading time
+had been that — which is why none of this cost more than it did.
+
+**What is left, by name.** One edge curve of the pilot on its chart: 35 µm of
+the boundary of a blend rolled against a blend that is itself a ball turning
+in a tube a micron wider than it. Forty-two curved faces of the pilot and two
+of the mannequin meshed from their boundaries, which is the tessellator's
+fallback and not the reader's. Ten parameter curves written in a blend's own
+parameters, which are the modeller's and not ours, read from the face on the
+other side instead; four loops bridged and three edges whose range would not
+recover, as before. Of the pilot's 12 274 loops, 955 sit more than a micron
+from their surface — 875 of them within ten, four as far as 0.37 mm — which
+is the file's own tolerant edges and has not been looked into here. And the
+evidence is twelve files: what none of them contains — a blend of varying
+radius, a chamfer, schemas 11 to 13 and 15 to 19 — has not been read by
+anything here.
+
+### The faces meshed from their boundaries were four faults, none of them a face that cannot be meshed (2026-11-19)
+
+Forty-two curved faces of the pilot fell back to a boundary rebuild because
+their surface mesh left the boundary undrawn somewhere. Thirty-four of them
+were one of four things, and none was a face that could not be meshed.
+
+* **An edge shorter than ten tolerances was taken for a closed one** (22
+  faces, all on one nut). Whether a sampled edge is reversed is decided by
+  which of its ends is nearer its start vertex — unless its two vertices are
+  within ten tolerances of each other, when it was called closed and left as
+  sampled. Ten tolerances is a tenth of a millimetre, and the section of a
+  0.1 mm blend is an arc half that long. Sampled from its far end and pinned
+  at each end to the wrong vertex, it doubled back three times in fifty
+  microns. An edge is now closed when it names one vertex twice, or when its
+  sampled ends cannot be told apart by where they are.
+* **A vertex at a pole was not at it** (4 faces). A wedge of sphere with its
+  corner on the pole has that corner solved to within rounding of the pole,
+  and the test for "u means nothing here" compared its circle of latitude
+  with the previous point's — which was itself nearly there. Given a `u` from
+  nowhere the boundary went on round the pole the long way and a twenty-degree
+  wedge read as a ring. The test is now also in space: half a turn of `u`
+  that moves the point less than a hundredth of the tolerance is no
+  dependence. And the first point of a chain, which has no neighbour when it
+  is solved, is given its neighbour's afterwards.
+* **A parameter too small for the triangulation** (2 faces). A corner lying
+  exactly on the line a parameter is measured from comes back as a number of
+  the order of 1e-50 rather than zero; `spade` refuses a coordinate under
+  1e-43 that is not zero, and the corner was silently not there — a strip of
+  cylinder meshed as a pentagon with a triangle missing.
+* **A boundary point in no triangle** (6 faces, each for one point). The file
+  has edges a tenth of a micron to four microns long at the corners of some
+  blends, running off the blend's own edge. Both ends land on one place of
+  that edge, or on two the wrong way round by a few hundredths of a nanometre
+  of parameter; the next segment is then read as passing through the point
+  before, and the point between is left on a spur. It is put back with the
+  triangle it was left out of: from the boundary point before it to the one
+  after, through it.
+
+Triangles with two corners in one place — what a blend closing to a point is
+sampled as — are left out when a face's mesh joins its body's; the pilot had
+46 before any of this, would have had 524 with every blend built, and has
+none.
+
+| | v0.3.2 | now |
+|---|---:|---:|
+| mannequin: faces meshed | 321 / 323 | 552 / 552 |
+| mannequin: open / non-manifold edges | 27 / 18 | 0 / 0 |
+| pilot: open / non-manifold edges | 0 / 10 | 0 / 2 |
+| `501.670.x_t` | nothing read | 5 bodies, 167 faces, closed |
+
+Eight of the forty-two are left: six blend faces whose boundary lies partly
+along the edge of the blend's own parameter range and folds onto itself there,
+one strip of cylinder with an edge along its seam, and one patch of sphere
+whose three edges are all stand-ins. They are counted by the conversion's own
+warning.
+
+**The mannequin, at the settings it was reported with.** At the default
+tolerance none of its curved faces is meshed from its boundary. At `--sag 0.03
+--angle 28.6`, which is what issue #3 ran, three are: faces 31, 178 and 182,
+each a narrow face of a spun ellipse. Face 182 was followed through: it is
+fifteen millimetres long and under two wide, and its tip lies beside the
+surface's pole. A boundary is sampled to a tolerance in space, and beside a
+pole a step that is straight in space is a long bend in parameters: joined by
+straight lines there, the two sides of the sliver cross. At 0.05 the samples
+happen to fall where they do not. This is not fixed; the three are meshed from
+their boundaries, and the warning says so.
+
+What that costs was measured, with every vertex of the mesh looked for on the
+surface of the face it belongs to (`OFF_SURFACE=1 face_probe`):
+
+| mannequin | vertices | faces within 1 µm of their surface | the rest |
+|---|---:|---:|---|
+| default tolerance | 295 598 | 550 of 552 | two at 1.1 µm |
+| `--sag 0.03 --angle 28.6` | 699 061 | 546 of 552 | three at 1.0 to 1.1 µm; the three slivers at 0.06, 0.08 and 0.14 mm |
+
+The first run of that measurement said twelve faces were half a millimetre to
+1.6 mm off. They were not: the search for the nearest point of a surface had
+stopped on a pole, where no slope leads away, and the probe now looks again
+from all over the surface before it calls a vertex off.
