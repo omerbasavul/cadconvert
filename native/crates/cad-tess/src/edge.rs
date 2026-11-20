@@ -280,10 +280,23 @@ pub fn discretise(solid: &Solid, edge: &Edge, options: &Resolved) -> Chain {
     // recovered the range by inverting both vertices has already encoded the
     // direction in the range, and trusting the flag over the points is how an
     // edge ends up traversed backwards in one face and forwards in the other.
-    let degenerate_ends = (end - start).length_squared() <= (edge.tolerance * 10.0).powi(2);
+    //
+    // The geometry is a witness for as long as it can tell the two ends
+    // apart, and that is not a matter of the file's tolerance. "Ends within
+    // ten tolerances of each other" used to mean a closed edge here, and ten
+    // tolerances is a tenth of a millimetre: the cross-section of a 0.1 mm
+    // blend is an arc half that long, with two perfectly distinct ends. Taken
+    // for closed, 22 faces of one nut had such an arc sampled from its far
+    // end and pinned to its near one — a boundary that doubles back on itself
+    // three times in fifty microns — and each was meshed from its boundary
+    // because nothing could be meshed inside one. An edge is closed when it
+    // names one vertex twice, or when its sampled ends are the same distance
+    // from where it starts.
+    let head_first = (points[0] - start).length_squared();
+    let head_last = (points[points.len() - 1] - start).length_squared();
+    let told_apart = (head_last - head_first).abs() > 1e-9 * (head_first + head_last) + 1e-24;
+    let degenerate_ends = edge.start == edge.end || !told_apart;
     if !degenerate_ends {
-        let head_first = (points[0] - start).length_squared();
-        let head_last = (points[points.len() - 1] - start).length_squared();
         if head_last < head_first {
             points.reverse();
             params.reverse();
@@ -444,9 +457,21 @@ fn thin(
             _ => 0.0,
         };
         if worst.0 > tolerance || turn > angle {
-            keep[worst.1] = true;
-            stack.push((a, worst.1));
-            stack.push((worst.1, b));
+            // The furthest point is where the span splits — when there is one.
+            // Points that sit on their chord to the last bit have no furthest
+            // among them, and the search then names the span's own start:
+            // splitting there hands the same span straight back, for ever,
+            // each round a little more of the stack. It takes a turn measured
+            // across nothing to ask for a split at all in that case — three
+            // points a tenth of a picometre apart, where an intersection walk
+            // stood still before setting off, read as an 8.6° corner — and it
+            // cost a mannequin's conversion 128 GB before the allocator
+            // refused. The middle is as good a place as any on a chord with
+            // nothing off it, and both halves are then strictly shorter.
+            let split = if worst.1 > a { worst.1 } else { a + (b - a) / 2 };
+            keep[split] = true;
+            stack.push((a, split));
+            stack.push((split, b));
         }
     }
     // The segment floor is the tessellator's own, and it is there so a
@@ -684,6 +709,29 @@ mod tests {
     }
 
     #[test]
+    fn a_short_arc_runs_from_its_start_whatever_the_tolerance_says() {
+        // Thirty degrees of a circle a tenth of a millimetre in radius: an
+        // arc 0.05 mm long, on an edge whose tolerance is a hundredth of a
+        // millimetre. Its range runs from the end vertex to the start one —
+        // the curve goes against the edge — and its two ends are five
+        // tolerances apart, which used to be near enough to call it closed
+        // and leave it as sampled: pinned at each end to the vertex at the
+        // other.
+        let circle = Curve::Circle { frame: Frame::IDENTITY, radius: 0.1 };
+        let at = |t: f64| circle.point_at(t);
+        let (lo, hi) = (TAU / 4.0, TAU / 3.0);
+        let mut s = solid_with(circle.clone(), at(hi), at(lo), Interval::new(lo, hi), true);
+        s.edges[0].tolerance = 1e-2;
+        let chain = discretise(&s, &s.edges[0], &Options::default().resolve(10.0).for_extent(0.05));
+        assert!(chain.len() >= 3, "an arc of thirty degrees has a middle");
+        assert_eq!(chain.points[0], at(hi));
+        assert_eq!(*chain.points.last().unwrap(), at(lo));
+        // Every point further from the start than the one before.
+        let from_start: Vec<f64> = chain.points.iter().map(|p| (*p - at(hi)).length()).collect();
+        assert!(from_start.windows(2).all(|w| w[1] > w[0]), "{from_start:?}");
+    }
+
+    #[test]
     fn end_points_are_pinned_to_the_vertices_exactly() {
         // A vertex that is a hair off the curve — which real files contain —
         // must still be reproduced bit-for-bit, or the two edges meeting there
@@ -839,6 +887,27 @@ mod tests {
             }
             assert!(best <= tolerance, "a point moved {best}");
         }
+    }
+
+    #[test]
+    fn thinning_ends_on_points_that_sit_on_their_own_chord() {
+        // Three points of a real chain, a tenth of a picometre apart, where an
+        // intersection walk stood still before setting off. The middle one is
+        // on the chord between the other two to the last bit, so no point is
+        // furthest from it — and the directions between them, which are
+        // rounding and nothing else, turn by 8.6°. That asked for a split
+        // with nowhere to make one, and the same span went back on the stack
+        // until the allocator refused 128 GB.
+        let mut points = vec![
+            Vec3::new(540.621824050078, -213.47732580747945, 236.68119111580103),
+            Vec3::new(540.6218240500779, -213.47732580747947, 236.68119111580106),
+            Vec3::new(540.6218240500766, -213.47732580747964, 236.6811911158015),
+        ];
+        let mut params = vec![0.0, 1.0, 2.0];
+        let ends = (points[0], points[2]);
+        thin(&mut points, &mut params, 0.0009729245200842827, 8f64.to_radians(), 2);
+        assert_eq!(points.len(), params.len());
+        assert_eq!((points[0], points[points.len() - 1]), ends);
     }
 
     #[test]

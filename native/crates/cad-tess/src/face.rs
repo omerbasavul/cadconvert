@@ -525,10 +525,21 @@ fn tessellate_reading(
     // assembly reaches this test, so the restriction costs nothing there; it
     // is here because the path it guards is only meaningful where a point
     // exists.
+    //
+    // A spline can have such a point too, and then it is a place the domain
+    // collapses exactly as a sphere's pole is: a fingertip is written as a
+    // patch closed round the finger whose last row of poles is one point
+    // repeated. That is asked of the surface rather than assumed of the kind,
+    // so a spline whose edges are both curves still closes onto nothing.
+    let d = surface.domain();
+    let spline_points = match surface {
+        Surface::Nurbs(_) => [edge_point(surface, &d, d.v.lo), edge_point(surface, &d, d.v.hi)],
+        _ => [None, None],
+    };
     let closes_to_a_point = matches!(
         surface,
         Surface::Sphere { .. } | Surface::Cone { .. } | Surface::Revolution { .. }
-    );
+    ) || spline_points.iter().any(|p| p.is_some());
     // And only where the ring does not already reach that point. A ring whose
     // own v touches the pole carries the apex already; closing it onto one
     // puts a second copy of a point the boundary has, the strip pinches to
@@ -549,8 +560,12 @@ fn tessellate_reading(
     // ring rises above the closing chord, which is the real failure, spares
     // that sphere but still costs 20 → 24, and fixes nothing in the Parasolid
     // reading it was built for.
-    let d = surface.domain();
-    let poles = [d.v.lo, d.v.hi].map(|v| surface.point_at(Vec2::new(d.u.lo, v)));
+    let poles = match surface {
+        // Only the edges of a spline that are points; the other is a curve,
+        // and a ring passing near one place on it has reached nothing.
+        Surface::Nurbs(_) => spline_points.map(|p| p.unwrap_or(Vec3::new(f64::NAN, f64::NAN, f64::NAN))),
+        _ => [d.v.lo, d.v.hi].map(|v| surface.point_at(Vec2::new(d.u.lo, v))),
+    };
     let reaches_the_point = |l: &UvLoop| {
         l.xyz
             .iter()
@@ -1387,12 +1402,30 @@ fn unwrap_chain_with(
             // choice that keeps the boundary a continuous path, and without it
             // consecutive points jump across the domain and the boundary
             // crosses itself, which costs the whole face its trim.
+            //
+            // "Stops depending" is measured in space as well as against the
+            // neighbour. A vertex that *is* the pole is solved to within
+            // rounding of it, not onto it: its circle of latitude is a
+            // fraction of a nanometre across and still not a millionth of
+            // the last point's, when the last point is itself close in. Half
+            // a turn of u moving the point by less than a hundredth of the
+            // tolerance is no dependence at all. Four wedge-shaped faces of
+            // the pilot's spheres had such a corner, handed a u from nowhere,
+            // and the boundary went on round the pole the long way: a wedge
+            // twenty degrees wide read as a ring, and meshed from its
+            // boundary because no region of the sphere had that outline.
             let (du, dv) = surface.derivatives_at(uv);
             let (pdu, pdv) = surface.derivatives_at(prev_uv);
-            if du.length() <= pdu.length() * 1e-6 {
+            let nothing = tolerance * 1e-2;
+            let half_turn = |period: Option<f64>| period.map_or(f64::INFINITY, |p| p * 0.5);
+            if du.length() <= pdu.length() * 1e-6
+                || du.length() * half_turn(domain.u_period) <= nothing
+            {
                 uv.u = prev_uv.u;
             }
-            if dv.length() <= pdv.length() * 1e-6 {
+            if dv.length() <= pdv.length() * 1e-6
+                || dv.length() * half_turn(domain.v_period) <= nothing
+            {
                 uv.v = prev_uv.v;
             }
             // A boundary that runs along the edge of the domain is solved
@@ -1453,6 +1486,20 @@ fn unwrap_chain_with(
         }
         previous = Some((uv, p));
         out.push(uv);
+    }
+
+    // The walk gives a pole its neighbour's parameter, and the first point of
+    // a chain has no neighbour yet when it is solved. It has one now.
+    if out.len() > 1 {
+        let (du, dv) = surface.derivatives_at(out[0]);
+        let nothing = tolerance * 1e-2;
+        let half_turn = |period: Option<f64>| period.map_or(f64::INFINITY, |p| p * 0.5);
+        if du.length() * half_turn(domain.u_period) <= nothing {
+            out[0].u = out[1].u;
+        }
+        if dv.length() * half_turn(domain.v_period) <= nothing {
+            out[0].v = out[1].v;
+        }
     }
 
     snap_runs_to_the_domain_edge(surface, domain, xyz, &mut out, tolerance);
@@ -1954,6 +2001,29 @@ fn wrapped_region(
         r.area = signed_area(&r.uv);
     }
     {
+        // A third thing makes a cut wrong, and it is the other rings' to say:
+        // a ring that doubles back in u where the cut stands crosses the seam
+        // column three times instead of once, and the strip is then a polygon
+        // that crosses itself. A ring cut clear of its own doubling-back spans
+        // exactly one period; cut inside it, it spans more. A finger joint of
+        // a mannequin is a band between a plain circle and an edge scalloped
+        // by the blends beside it, and the circle's first vertex happened to
+        // sit over one scallop: 0.06 of a period too far, and seven such bands
+        // were given up to a rebuild that drew them 10 mm off their surface.
+        //
+        // So a cut that clears the seam is kept as the answer to fall back on,
+        // and the search goes on for one at which no ring overruns. Where the
+        // first cut already overruns nothing — which is every face that was
+        // right — it is taken at once and nothing moves.
+        let overruns = |rings: &[UvLoop]| {
+            rings.iter().any(|r| {
+                let (lo, hi) = r
+                    .uv
+                    .iter()
+                    .fold((f64::MAX, f64::MIN), |(a, b), q| (a.min(q.u), b.max(q.u)));
+                (hi - lo) - period > period * 1e-9
+            })
+        };
         let tries = rings.first().map(|r| r.uv.len().saturating_sub(1)).unwrap_or(0);
         let mut taken: Option<(usize, Vec<UvLoop>)> = None;
         for k in 0..tries {
@@ -1965,8 +2035,13 @@ fn wrapped_region(
             align_cuts(&mut trial, period);
             slide_to_cut(&mut trial);
             if !stands_at_the_cut(&trial) {
-                taken = Some((k, trial));
-                break;
+                let clear = !overruns(&trial);
+                if clear || taken.is_none() {
+                    taken = Some((k, trial));
+                }
+                if clear {
+                    break;
+                }
             }
         }
         match taken {
@@ -2087,9 +2162,26 @@ fn wrapped_region(
                 // domain edge where a cone's radius hits zero is its apex.
                 // The reach bound is what stops a shallow cone running to an
                 // apex far outside the part (the spike bug of the STEP pilot).
+                //
+                // Which edge, where only one of the two is a point at all, is
+                // not a question of which is nearer. A fingertip's ring *is*
+                // the patch's near edge, and the point it runs to is the far
+                // one: taking the nearer closed the ring onto a place on
+                // itself, and ten fingertips of a mannequin came out as flat
+                // lids 7 mm inside the domes they are. Where both edges are
+                // points — a sphere, a spheroid — or neither is, the nearer
+                // stands, as it did.
                 let v_mid = mean_v(&ring.uv);
                 let toward_high = (domain.v.hi - v_mid).abs() < (v_mid - domain.v.lo).abs();
-                let v_edge = if toward_high { domain.v.hi } else { domain.v.lo };
+                let v_edge = match (
+                    edge_point(surface, domain, domain.v.lo),
+                    edge_point(surface, domain, domain.v.hi),
+                ) {
+                    (Some(_), None) => domain.v.lo,
+                    (None, Some(_)) => domain.v.hi,
+                    _ if toward_high => domain.v.hi,
+                    _ => domain.v.lo,
+                };
                 if !v_edge.is_finite() || v_edge.abs() > 1e11 {
                     return None;
                 }
@@ -2235,6 +2327,43 @@ fn full_domain_loop(
         uv,
         xyz,
     })
+}
+
+/// The point a surface collapses to along one edge of its `v` domain, if it
+/// does.
+///
+/// A cone's apex, a sphere's pole, the end of a profile that meets its own
+/// axis, a spline whose last row of poles is one point: each is a whole line
+/// of the parameter domain standing on one place in space. Asked by walking
+/// the edge rather than by naming the surface, because the same shape arrives
+/// as any of them.
+fn edge_point(surface: &Surface, domain: &Domain, v_edge: f64) -> Option<Vec3> {
+    if !v_edge.is_finite() || v_edge.abs() > 1e11 {
+        return None;
+    }
+    let u = domain.u;
+    if !(u.span().is_finite() && u.span().abs() < 1e9) {
+        return None;
+    }
+    const ALONG: usize = 8;
+    let at = |k: usize| surface.point_at(Vec2::new(u.at(k as f64 / ALONG as f64), v_edge));
+    let first = at(0);
+    if !first.is_finite() {
+        return None;
+    }
+    // How big the surface is, measured the same way one row in: an edge is a
+    // point when it is nothing beside that, not when it is under some length.
+    // A cone's other edge is nominal — a trillion units off — so where the
+    // domain does not end, one unit in is as far as "a row in" goes.
+    let other = if v_edge == domain.v.lo { domain.v.hi } else { domain.v.lo };
+    let step = (other - v_edge) * 0.25;
+    let inner = v_edge + if step.abs() < 1e9 { step } else { step.signum() };
+    let across = |k: usize| surface.point_at(Vec2::new(u.at(k as f64 / ALONG as f64), inner));
+    let size = (1..ALONG)
+        .map(|k| (across(k) - across(0)).length())
+        .fold(0.0f64, f64::max);
+    let spread = (1..ALONG).map(|k| (at(k) - first).length()).fold(0.0f64, f64::max);
+    (spread <= size * 1e-9 + 1e-12 && size > 0.0).then_some(first)
 }
 
 fn mean_v(uv: &[Vec2]) -> f64 {
@@ -2436,23 +2565,28 @@ fn close_strip(
     // assembly this was most of 1,820 open half-edges against OpenCASCADE's
     // 113. The polygon closes last-to-first implicitly, so a trailing repeat
     // of the first point is redundant in the same way.
-    let mut cut = 0;
-    let mut i = 1;
-    while i < xyz.len() {
-        if (xyz[i] - xyz[i - 1 - cut]).length_squared() <= 0.0 {
-            cut += 1;
-        } else if cut > 0 {
-            xyz[i - cut] = xyz[i];
-            uv[i - cut] = uv[i];
-        }
-        i += 1;
-    }
-    xyz.truncate(xyz.len() - cut);
-    uv.truncate(uv.len() - cut);
-    while xyz.len() > 3 && (xyz[xyz.len() - 1] - xyz[0]).length_squared() <= 0.0 {
-        xyz.pop();
-        uv.pop();
-    }
+    //
+    // A pole is the one repeat that is not a corner. Its ring is a whole line
+    // of the strip standing on one point, and taking it down to a single
+    // vertex turns the strip's far side into a fan from one corner — which is
+    // a fine way to draw a cap whose ring keeps its distance, and it is what
+    // every cone and sphere here has always been given. But the fan's first
+    // spoke runs corner to corner across the whole strip, and a ring that
+    // comes up close to the pole anywhere along the way crosses it: the
+    // knuckles of a mannequin are caps of a spheroid cut off-centre, their
+    // rings 0.4 mm from the pole on one side and past the equator on the
+    // other, and six of them crossed their own boundary and were given up to
+    // a rebuild 5 mm off the surface. So where the fan does cross, the pole
+    // keeps both ends of its line and the strip stays a strip; the sliver
+    // between them has no area in space and is dropped like any other.
+    let (fan_uv, fan_xyz, poles) = without_repeats(&uv, &xyz, period, false);
+    let crossed = poles.iter().any(|k| crosses_at(&fan_uv, *k));
+    let (uv, xyz) = if crossed {
+        let (uv, xyz, _) = without_repeats(&uv, &xyz, period, true);
+        (uv, xyz)
+    } else {
+        (fan_uv, fan_xyz)
+    };
 
     UvLoop {
         area: signed_area(&uv),
@@ -2461,6 +2595,75 @@ fn close_strip(
         uv,
         xyz,
     }
+}
+
+/// A strip's boundary with each run of one repeated point taken down to one.
+///
+/// Also says which of the points left stand for a pole — a run that reached
+/// more than half a period across the strip — and, when asked, leaves such a
+/// run its far end as well as its near one.
+fn without_repeats(
+    uv: &[Vec2],
+    xyz: &[Vec3],
+    period: f64,
+    keep_far_end: bool,
+) -> (Vec<Vec2>, Vec<Vec3>, Vec<usize>) {
+    let mut out_uv: Vec<Vec2> = Vec::with_capacity(uv.len());
+    let mut out_xyz: Vec<Vec3> = Vec::with_capacity(xyz.len());
+    let mut poles: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < xyz.len() {
+        let mut j = i;
+        while j + 1 < xyz.len() && (xyz[j + 1] - xyz[i]).length_squared() <= 0.0 {
+            j += 1;
+        }
+        out_uv.push(uv[i]);
+        out_xyz.push(xyz[i]);
+        if (uv[j].u - uv[i].u).abs() > period * 0.5 {
+            poles.push(out_uv.len() - 1);
+            if keep_far_end {
+                out_uv.push(uv[j]);
+                out_xyz.push(xyz[j]);
+            }
+        }
+        i = j + 1;
+    }
+    while out_xyz.len() > 3
+        && (out_xyz[out_xyz.len() - 1] - out_xyz[0]).length_squared() <= 0.0
+        && !(keep_far_end && poles.last().is_some_and(|k| *k + 1 == out_xyz.len() - 1))
+    {
+        out_xyz.pop();
+        out_uv.pop();
+    }
+    (out_uv, out_xyz, poles)
+}
+
+/// Whether either boundary segment at point `k` cuts across another.
+fn crosses_at(uv: &[Vec2], k: usize) -> bool {
+    let n = uv.len();
+    if n < 4 {
+        return false;
+    }
+    let side = |a: Vec2, b: Vec2, c: Vec2| (b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u);
+    let cuts = |a: Vec2, b: Vec2, c: Vec2, d: Vec2| {
+        let (d1, d2) = (side(a, b, c), side(a, b, d));
+        let (d3, d4) = (side(c, d, a), side(c, d, b));
+        d1 * d2 < 0.0 && d3 * d4 < 0.0
+    };
+    for start in [(k + n - 1) % n, k] {
+        let (a, b) = (uv[start], uv[(start + 1) % n]);
+        for other in 0..n {
+            let next = (other + 1) % n;
+            // Segments that share an end meet there and nowhere else.
+            if other == start || next == start || other == (start + 1) % n {
+                continue;
+            }
+            if cuts(a, b, uv[other], uv[next]) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Interior points along a seam line, so the strip's ends are not one long edge.
@@ -2949,7 +3152,16 @@ fn triangulate_region(
                       uv: Vec2,
                       xyz: Option<Vec3>|
      -> Option<usize> {
-        let p = Point2::new(uv.u * scale.u, uv.v * scale.v);
+        // The triangulation refuses a coordinate smaller than it can do
+        // arithmetic on — anything under about 1e-43 that is not zero — and a
+        // refused point is a corner the boundary no longer has. A parameter
+        // that small is what a solve returns for a point lying *on* the line
+        // it measures from: the corner of a strip of cylinder whose edge is
+        // the cylinder's own base came back with such a v, was refused, and
+        // the strip was meshed as a pentagon with a triangle missing. It is
+        // zero, and is given as zero.
+        let whole = |x: f64| if x.abs() < 1e-40 { 0.0 } else { x };
+        let p = Point2::new(whole(uv.u * scale.u), whole(uv.v * scale.v));
         if !p.x.is_finite() || !p.y.is_finite() {
             return None;
         }
@@ -3111,6 +3323,7 @@ fn triangulate_region(
     // them landing on one triangulation vertex loses the second one's position
     // to the first, and the face then draws a different path around the hole
     // than the face on the other side of it does.
+    let mut hole_handles: Vec<Vec<usize>> = Vec::new();
     for hole in &holes {
         let mut hs = Vec::new();
         let mut previous_uv: Option<Vec2> = None;
@@ -3140,6 +3353,7 @@ fn triangulate_region(
         if hs.len() >= 3 {
             constrain(&mut cdt, &mut uv_of, &mut xyz_of, &hs);
         }
+        hole_handles.push(hs);
     }
 
     if options.interior_points {
@@ -3297,6 +3511,88 @@ fn triangulate_region(
     }
 
         let _ = kept;
+        // A boundary point in no triangle is a boundary with a point missing,
+        // and the face across that edge still has it.
+        //
+        // It happens where the file has an edge too short to exist in this
+        // surface's parameters: a jog of a tenth of a micron at the corner of
+        // a blend, running off the blend's own edge, whose two ends land on
+        // one place of that edge — or on two places the wrong way round. The
+        // boundary then doubles back on itself for a few hundredths of a
+        // nanometre of parameter, the triangulation reads the next segment
+        // as passing through the point before, and the point between is left
+        // on a spur with nothing inside it. The region is right and the
+        // boundary is one point short.
+        //
+        // The point is put back with the triangle it was left out of: from
+        // the boundary point before it to the one after, which the mesh joins
+        // directly, through the point itself. That triangle is as thin as the
+        // jog and lies along the boundary, so the outline is the file's again
+        // and nothing else moves. Six faces of the pilot were meshed from
+        // their boundaries for the want of one such point each.
+        let mut directed: rustc_hash::FxHashSet<(u32, u32)> = Default::default();
+        for t in patch.indices.chunks_exact(3) {
+            for k in 0..3 {
+                directed.insert((t[k], t[(k + 1) % 3]));
+            }
+        }
+        let mut put_back: Vec<[usize; 3]> = Vec::new();
+        for ring in std::iter::once(&boundary_handles).chain(hole_handles.iter()) {
+            let n = ring.len();
+            let Some(start) = (0..n).find(|&k| remap[ring[k]] != u32::MAX) else {
+                continue;
+            };
+            let mut k = 0;
+            while k < n {
+                let before = ring[(start + k) % n];
+                // The run of points left out after this one.
+                let mut run = 0;
+                while run + 1 < n && remap[ring[(start + k + 1 + run) % n]] == u32::MAX {
+                    run += 1;
+                }
+                let after = ring[(start + k + 1 + run) % n];
+                if run > 0 && before != after {
+                    let (a, b) = (remap[before], remap[after]);
+                    let lost = |i: usize| ring[(start + k + 1 + i) % n];
+                    if directed.contains(&(a, b)) {
+                        // The mesh runs before→after; the new triangles run
+                        // back along that edge and out round the points.
+                        let mut hinge = before;
+                        for i in 0..run {
+                            put_back.push([after, hinge, lost(i)]);
+                            hinge = lost(i);
+                        }
+                    } else if directed.contains(&(b, a)) {
+                        let mut hinge = after;
+                        for i in (0..run).rev() {
+                            put_back.push([before, hinge, lost(i)]);
+                            hinge = lost(i);
+                        }
+                    }
+                }
+                k += run + 1;
+            }
+        }
+        for corners in put_back {
+            let mut corner = [0u32; 3];
+            for (k, &i) in corners.iter().enumerate() {
+                if remap[i] == u32::MAX {
+                    let uv = uv_of[i];
+                    let p = xyz_of[i].unwrap_or_else(|| surface.point_at(uv));
+                    let mut n = surface.normal_at(uv);
+                    if !same_sense {
+                        n = -n;
+                    }
+                    remap[i] = patch.positions.len() as u32;
+                    patch.positions.push([p.x as f32, p.y as f32, p.z as f32]);
+                    patch.normals.push([n.x as f32, n.y as f32, n.z as f32]);
+                    parameters.push(uv);
+                    on_boundary.push(xyz_of[i].is_some());
+                }
+                corner[k] = remap[i];
+            }
+            patch.indices.extend_from_slice(&corner);
+        }
 
         // A triangle that reaches across a quarter of the face's own parameter
         // range is not faceting, it is a chord through the part. Dump the
@@ -5446,10 +5742,12 @@ fn boundary_gaps(patch: &Patch, rings: &[&[Vec3]]) -> usize {
             if !have.contains(&(a.min(b), a.max(b))) {
                 if std::env::var_os("CAD_TESS_GAP_WHERE").is_some() {
                     println!(
-                        "[gap] face={} ring of {} at {w}: [{:.4}, {:.4}, {:.4}] -> [{:.4}, {:.4}, {:.4}]  ({:.5} mm long)",
+                        "[gap] face={} ring of {} at {w}: [{:.4}, {:.4}, {:.4}] -> [{:.4}, {:.4}, {:.4}]  ({:.5} mm long); nearest mesh vertices {:.3e} and {:.3e} away",
                         CURRENT_FACE.with(|c| c.get()),
                         ring.len(),
-                        p.x, p.y, p.z, q.x, q.y, q.z, (q - p).length()
+                        p.x, p.y, p.z, q.x, q.y, q.z, (q - p).length(),
+                        patch.positions.iter().map(|v| (Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64) - Vec3::new(p.x as f32 as f64, p.y as f32 as f64, p.z as f32 as f64)).length()).fold(f64::INFINITY, f64::min),
+                        patch.positions.iter().map(|v| (Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64) - Vec3::new(q.x as f32 as f64, q.y as f32 as f64, q.z as f32 as f64)).length()).fold(f64::INFINITY, f64::min),
                     );
                 }
                 gaps += 1;

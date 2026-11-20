@@ -52,6 +52,11 @@ pub struct Report {
     pub vertices: usize,
     /// Faces whose triangulation succeeded.
     pub faces_ok: usize,
+    /// Of those, the curved ones meshed from their own boundaries rather
+    /// than from their surface: the boundary is right and what lies between
+    /// is an interpolation of it. A flat face meshed that way has lost
+    /// nothing and is not counted.
+    pub faces_from_boundary: usize,
     /// The caller stopped it between bodies; see [`tessellate_scene_with`].
     /// The counts above are for the bodies that were meshed.
     pub cancelled: bool,
@@ -71,6 +76,7 @@ impl Report {
         self.triangles += other.triangles;
         self.vertices += other.vertices;
         self.faces_ok += other.faces_ok;
+        self.faces_from_boundary += other.faces_from_boundary;
     }
 
     /// Fraction of faces that produced triangles.
@@ -995,10 +1001,31 @@ pub fn tessellate_solid(
                     .unwrap_or(default_material);
                 let run = runs.entry(material).or_default();
                 let run_start = run.len();
-                run.extend(patch.indices.iter().map(|i| i + base));
-                let _ = run_start;
-                report.triangles += patch.indices.len() / 3;
+                // A triangle with two corners in one place is not a triangle.
+                // A surface that closes to a point — a blend running out
+                // where its two surfaces come to touch, a patch gathered to
+                // an apex — is sampled along the edge that is that point, and
+                // every sample there is the same place: the triangles between
+                // them have no area, no normal and no business in a mesh. The
+                // two real edges of such a triangle lie on top of each other,
+                // so the neighbours either side of it already meet, and
+                // leaving it out opens nothing.
+                let corner = |i: u32| patch.positions[i as usize];
+                let before = run.len();
+                for t in patch.indices.chunks_exact(3) {
+                    let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
+                    if a == b || b == c || a == c {
+                        continue;
+                    }
+                    run.extend(t.iter().map(|i| i + base));
+                }
+                report.triangles += (run.len() - before) / 3;
                 report.faces_ok += 1;
+                if patch.rebuilt
+                    && !matches!(solid.surface(solid.face(fid).surface), cad_ir::brep::Surface::Plane { .. })
+                {
+                    report.faces_from_boundary += 1;
+                }
                 face_ranges.push((fid, material, run_start, run.len()));
             }
             Ok(patch) => report.failed.push(FaceFailure {
