@@ -94,26 +94,53 @@ pub fn find_span(knots: &[f64], degree: usize, n_control: usize, t: f64) -> usiz
     mid
 }
 
+/// How many points an evaluation can blend without asking the heap for room:
+/// enough for degree eleven, which is more than any file here has used.
+const INLINE: usize = 12;
+
 /// Evaluate a B-spline at `t` by de Boor's algorithm.
 ///
 /// `control` must hold at least `knots.len() - degree - 1` points.
 pub fn de_boor<P: Blend>(degree: usize, control: &[P], knots: &[f64], t: f64) -> P {
-    if control.is_empty() {
+    de_boor_by(degree, control.len(), |i| control[i], knots, t)
+}
+
+/// [`de_boor`] over control points that are asked for rather than laid out.
+///
+/// A spline is local: `degree + 1` of its points reach any one parameter.
+/// Handing this a way to *get* a point, instead of all of them in a row,
+/// means the others are never built — which matters when building one is a
+/// weighting, or a difference, or the evaluation of a whole other spline, and
+/// there are a thousand of them.
+pub fn de_boor_by<P: Blend>(
+    degree: usize,
+    count: usize,
+    control: impl Fn(usize) -> P,
+    knots: &[f64],
+    t: f64,
+) -> P {
+    if count == 0 {
         return P::zero();
     }
     if degree == 0 {
-        let span = find_span(knots, 0, control.len(), t);
-        return control[span.min(control.len() - 1)];
+        let span = find_span(knots, 0, count, t);
+        return control(span.min(count - 1));
     }
 
-    let span = find_span(knots, degree, control.len(), t);
+    let span = find_span(knots, degree, count, t);
     // The `degree + 1` control points influencing this span.
-    let mut d: Vec<P> = (0..=degree)
-        .map(|j| {
-            let idx = (span + j).saturating_sub(degree);
-            control[idx.min(control.len() - 1)]
-        })
-        .collect();
+    let mut inline = [P::zero(); INLINE];
+    let mut spilled: Vec<P>;
+    let d: &mut [P] = if degree < INLINE {
+        &mut inline[..=degree]
+    } else {
+        spilled = vec![P::zero(); degree + 1];
+        &mut spilled
+    };
+    for (j, slot) in d.iter_mut().enumerate() {
+        let idx = (span + j).saturating_sub(degree);
+        *slot = control(idx.min(count - 1));
+    }
 
     for r in 1..=degree {
         for j in (r..=degree).rev() {
@@ -147,25 +174,38 @@ pub fn de_boor_with_derivative<P: Blend>(
     knots: &[f64],
     t: f64,
 ) -> (P, P) {
-    let value = de_boor(degree, control, knots, t);
-    if degree == 0 || control.len() < 2 {
+    de_boor_with_derivative_by(degree, control.len(), |i| control[i], knots, t)
+}
+
+/// [`de_boor_with_derivative`] over control points that are asked for.
+///
+/// The derivative spline's own points are differences of neighbours, and only
+/// the `degree` of them that reach `t` are ever formed.
+pub fn de_boor_with_derivative_by<P: Blend>(
+    degree: usize,
+    count: usize,
+    control: impl Fn(usize) -> P,
+    knots: &[f64],
+    t: f64,
+) -> (P, P) {
+    let value = de_boor_by(degree, count, &control, knots, t);
+    if degree == 0 || count < 2 {
         return (value, P::zero());
     }
 
-    let mut dctl = Vec::with_capacity(control.len() - 1);
-    for i in 0..control.len() - 1 {
+    let slope = |i: usize| {
         let lo = knots.get(i + 1).copied().unwrap_or(0.0);
         let hi = knots.get(i + degree + 1).copied().unwrap_or(lo);
         let denom = hi - lo;
-        dctl.push(if denom.abs() > f64::EPSILON {
-            control[i + 1].sub(control[i]).scale(degree as f64 / denom)
+        if denom.abs() > f64::EPSILON {
+            control(i + 1).sub(control(i)).scale(degree as f64 / denom)
         } else {
             P::zero()
-        });
-    }
+        }
+    };
     // The derivative spline drops one knot from each end.
     let dknots = &knots[1..knots.len().saturating_sub(1)];
-    let derivative = de_boor(degree - 1, &dctl, dknots, t);
+    let derivative = de_boor_by(degree - 1, count - 1, slope, dknots, t);
     (value, derivative)
 }
 
@@ -179,7 +219,18 @@ pub fn rational_point_and_derivative(
     knots: &[f64],
     t: f64,
 ) -> ([f64; 3], [f64; 3]) {
-    let (c, dc) = de_boor_with_derivative(degree, homogeneous, knots, t);
+    rational_point_and_derivative_by(degree, homogeneous.len(), |i| homogeneous[i], knots, t)
+}
+
+/// [`rational_point_and_derivative`] over control points that are asked for.
+pub fn rational_point_and_derivative_by(
+    degree: usize,
+    count: usize,
+    homogeneous: impl Fn(usize) -> [f64; 4],
+    knots: &[f64],
+    t: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let (c, dc) = de_boor_with_derivative_by(degree, count, homogeneous, knots, t);
     let w = c[3];
     if w.abs() < 1e-300 {
         return ([c[0], c[1], c[2]], [0.0; 3]);

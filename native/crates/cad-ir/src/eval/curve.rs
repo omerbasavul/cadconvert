@@ -211,50 +211,119 @@ impl Curve {
 
     /// Sample-then-refine inversion, for curves with no closed form.
     ///
-    /// The coarse sweep finds the right basin — Newton alone would converge to
+    /// The coarse sweep finds the basins — Newton alone would converge to
     /// whichever root it started nearest, which on a wiggly spline is often the
-    /// wrong one — and Newton then converges quadratically inside it.
+    /// wrong one — and Newton then converges quadratically inside each.
+    ///
+    /// Each, not one. The nearest *sample* is not always in the nearest
+    /// *basin*: a closed curve that runs out along one side of a slot and back
+    /// along the other passes itself a tenth of a millimetre away, and a
+    /// vertex sitting on one pass, between two samples of it, can be nearer to
+    /// a sample of the other. Refined from there it lands on the wrong pass,
+    /// and an edge half a millimetre long becomes the other fifty millimetres
+    /// of the curve. So every dip in the sweep is refined, and the answer is
+    /// whichever is nearest once it has been.
     fn param_by_search(&self, p: Vec3, hint: Option<f64>) -> Option<f64> {
         let range = self.natural_range();
-        const SAMPLES: usize = 64;
+        // Often enough to see every span of a spline that has many.
+        let samples = match self {
+            Curve::Nurbs(n) => (2 * n.knots.len()).clamp(64, 2048),
+            _ => 64,
+        };
 
-        let mut best = hint.unwrap_or(range.lo);
-        let mut best_d2 = (self.point_at(best) - p).length_squared();
-        for i in 0..=SAMPLES {
-            let t = range.at(i as f64 / SAMPLES as f64);
-            let d2 = (self.point_at(t) - p).length_squared();
-            if d2 < best_d2 {
-                best_d2 = d2;
-                best = t;
-            }
-        }
-
+        let off = |t: f64| (self.point_at(t) - p).length_squared();
         // Newton on f(t) = (C(t) − p)·C'(t), whose roots are the parameters at
         // which the curve is closest to (or furthest from) p.
-        let mut t = best;
-        for _ in 0..24 {
-            let c = self.point_at(t);
-            let d1 = self.derivative_at(t);
-            let diff = c - p;
-            let f = diff.dot(d1);
-            // Second derivative by a central difference on the first: the
-            // curves needing this path are splines, where an analytic second
-            // derivative buys nothing the step size does not already limit.
-            let h = (range.span().abs() * 1e-5).max(1e-9);
-            let d2 = (self.derivative_at(t + h) - self.derivative_at(t - h)) * (0.5 / h);
-            let fp = d1.length_squared() + diff.dot(d2);
-            if fp.abs() < 1e-300 {
-                break;
-            }
-            let step = f / fp;
-            let next = (t - step).clamp(range.lo, range.hi);
-            if (next - t).abs() < 1e-14 * range.span().abs().max(1.0) {
+        let polish = |from: f64| {
+            let mut t = from;
+            for _ in 0..24 {
+                let c = self.point_at(t);
+                let d1 = self.derivative_at(t);
+                let diff = c - p;
+                let f = diff.dot(d1);
+                // Second derivative by a central difference on the first: the
+                // curves needing this path are splines, where an analytic second
+                // derivative buys nothing the step size does not already limit.
+                let h = (range.span().abs() * 1e-5).max(1e-9);
+                let d2 = (self.derivative_at(t + h) - self.derivative_at(t - h)) * (0.5 / h);
+                let fp = d1.length_squared() + diff.dot(d2);
+                if fp.abs() < 1e-300 {
+                    break;
+                }
+                let step = f / fp;
+                let next = (t - step).clamp(range.lo, range.hi);
+                if (next - t).abs() < 1e-14 * range.span().abs().max(1.0) {
+                    t = next;
+                    break;
+                }
                 t = next;
-                break;
             }
-            t = next;
+            t
+        };
+        // Within a dip the distance has one lowest point, and that is found
+        // by closing in on it from both sides before Newton is let near it.
+        // Newton reads the curve's direction where it stands, and a curve
+        // with a corner in it has two there: started the far side of a
+        // corner from the answer, it walks to the corner and stops, because
+        // on its own side of it the corner *is* the nearest point.
+        let reach = range.span() / samples as f64;
+        let refine = |from: f64| {
+            const GOLDEN: f64 = 0.618_033_988_749_894_9;
+            let (mut lo, mut hi) = ((from - reach).max(range.lo), (from + reach).min(range.hi));
+            let (mut a, mut b) = (hi - GOLDEN * (hi - lo), lo + GOLDEN * (hi - lo));
+            let (mut at_a, mut at_b) = (off(a), off(b));
+            for _ in 0..48 {
+                if at_a <= at_b {
+                    hi = b;
+                    (b, at_b) = (a, at_a);
+                    a = hi - GOLDEN * (hi - lo);
+                    at_a = off(a);
+                } else {
+                    lo = a;
+                    (a, at_a) = (b, at_b);
+                    b = lo + GOLDEN * (hi - lo);
+                    at_b = off(b);
+                }
+            }
+            let (closed_in, there) = if at_a <= at_b { (a, at_a) } else { (b, at_b) };
+            let polished = polish(closed_in);
+            if off(polished) <= there { polished } else { closed_in }
+        };
+
+        let swept: Vec<f64> = (0..=samples)
+            .map(|i| off(range.at(i as f64 / samples as f64)))
+            .collect();
+        // The dips: samples no further than either neighbour.
+        let mut dips: Vec<(f64, f64)> = (0..=samples)
+            .filter(|&i| {
+                (i == 0 || swept[i] <= swept[i - 1]) && (i == samples || swept[i] <= swept[i + 1])
+            })
+            .map(|i| (swept[i], range.at(i as f64 / samples as f64)))
+            .collect();
+        dips.sort_by(|a, b| a.0.total_cmp(&b.0));
+        dips.truncate(8);
+
+        // The hint stands unless something is strictly nearer, as it always
+        // has: where two parameters are the same point — the two ends of a
+        // closed curve — it is what says which was meant.
+        let start = hint.unwrap_or(range.lo);
+        let mut best = (off(start), start);
+        if let Some(&(nearest, t)) = dips.first()
+            && nearest < best.0
+        {
+            best = (nearest, t);
         }
-        Some(t)
+        let mut found = refine(best.1);
+        let mut found_off = off(found);
+        for &(_, t) in dips.iter().filter(|d| d.1 != best.1) {
+            let other = refine(t);
+            let other_off = off(other);
+            // Nearer by more than rounding, or it is the same place.
+            if other_off.sqrt() + 1e-12 < found_off.sqrt() {
+                (found, found_off) = (other, other_off);
+            }
+        }
+        Some(found)
     }
 
     /// Split the curve into a polyline whose chord never departs from the true
@@ -401,13 +470,21 @@ fn nurbs_parameter(n: &NurbsCurve, t: f64) -> f64 {
 
 fn nurbs_point_derivative(n: &NurbsCurve, t: f64) -> (Vec3, Vec3) {
     let t = nurbs_parameter(n, t);
-    let points: Vec<[f64; 3]> = n.control_points.iter().map(|p| p.to_array()).collect();
+    // The control points are asked for one at a time: a curve computed to a
+    // hundredth of a micron has thousands, an evaluation reads four of them,
+    // and copying the rest out first made every point cost the whole curve.
+    let count = n.control_points.len();
+    let point = |i: usize| n.control_points[i].to_array();
     if n.weights.is_empty() {
-        let (p, d) = nurbs::de_boor_with_derivative(n.degree, &points, &n.knots, t);
+        let (p, d) = nurbs::de_boor_with_derivative_by(n.degree, count, point, &n.knots, t);
         (Vec3::from_slice(&p), Vec3::from_slice(&d))
     } else {
-        let hom = nurbs::to_homogeneous(&points, &n.weights);
-        let (p, d) = nurbs::rational_point_and_derivative(n.degree, &hom, &n.knots, t);
+        let weighted = |i: usize| {
+            let p = point(i);
+            let w = n.weights.get(i).copied().unwrap_or(1.0);
+            [p[0] * w, p[1] * w, p[2] * w, w]
+        };
+        let (p, d) = nurbs::rational_point_and_derivative_by(n.degree, count, weighted, &n.knots, t);
         (Vec3::from_slice(&p), Vec3::from_slice(&d))
     }
 }
@@ -764,6 +841,33 @@ mod tests {
             }
             .is_closed()
         );
+    }
+
+    #[test]
+    fn a_point_on_a_curve_that_passes_itself_closely_inverts_to_its_own_pass() {
+        // Out along one side of a slot and back along the other, a tenth of a
+        // millimetre away: a point on the way out, between two samples of the
+        // sweep, is nearer to a sample of the way back than to either.
+        use crate::brep::{Curve, NurbsCurve};
+        use crate::math::Vec3;
+        let curve = Curve::Nurbs(NurbsCurve {
+            degree: 1,
+            control_points: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(50.0, 0.0, 0.0),
+                Vec3::new(50.0, 0.1, 0.0),
+                Vec3::new(0.0, 0.1, 0.0),
+            ],
+            weights: Vec::new(),
+            knots: vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0],
+            closed: false,
+        });
+        for i in 1..400 {
+            let p = Vec3::new(50.0 * i as f64 / 400.0, 0.0, 0.0);
+            let t = curve.param_of(p, None).expect("it inverts");
+            let back = curve.point_at(t);
+            assert!((back - p).length() <= 1e-9, "x = {} came back as {back:?}", p.x);
+        }
     }
 
     #[test]
