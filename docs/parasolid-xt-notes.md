@@ -4559,8 +4559,8 @@ fifteen millimetres long and under two wide, and its tip lies beside the
 surface's pole. A boundary is sampled to a tolerance in space, and beside a
 pole a step that is straight in space is a long bend in parameters: joined by
 straight lines there, the two sides of the sliver cross. At 0.05 the samples
-happen to fall where they do not. This is not fixed; the three are meshed from
-their boundaries, and the warning says so.
+happen to fall where they do not. It was fixed the next day; see the section
+after this one.
 
 What that costs was measured, with every vertex of the mesh looked for on the
 surface of the face it belongs to (`OFF_SURFACE=1 face_probe`):
@@ -4574,3 +4574,86 @@ The first run of that measurement said twelve faces were half a millimetre to
 1.6 mm off. They were not: the search for the nearest point of a surface had
 stopped on a pole, where no slope leads away, and the probe now looks again
 from all over the surface before it calls a vertex off.
+
+### A ring was drawn where it is and placed somewhere else (2026-11-20)
+
+The three slivers of the mannequin were the visible part of two things, and
+looking for the first found the second, which was the larger.
+
+**A face that fails is tried again with its boundary sampled as its surface
+asks.** A chain is sampled to a tolerance in space and a face is meshed in
+its surface's parameters, where the chain's points are joined by straight
+lines. Beside a pole those are different curves: a boundary a millimetre from
+the pole of a spun ellipse turns through most of a radian of `u` in one
+chord, and the straight line between the chord's ends in parameters lies a
+tenth of a millimetre from the boundary. On a face narrower than that the two
+sides cross. So for a curved face that could not be meshed from its surface,
+each chord of its edges is held to its surface as well — the point half way
+along it in parameters lies on the curve to a quarter of the sag or a
+thirtieth of the chord, whichever is less — chords of it that still cross
+are halved, and an edge of two points is halved whatever it crosses. The face
+is meshed again, and so is every face along an edge that changed. A face that
+was sound and is not with the finer chain has its edges put back.
+
+It is done only for faces that have failed. Held to everywhere it is a second
+sampling rule: tried that way, every boundary of a sphere above its tropics
+was halved, the pilot gained 44 000 triangles, and two of its bodies opened —
+one because a point was put 5 µm from a pole on a chord that ended there. An
+end of a chord has no `u` of its own when exchanging it for the other end's
+moves it less than a thousandth of the chord; asking whether it *is* the pole
+by its coordinates is not the same question, since a vertex on a pole is
+solved to within rounding of it and not onto it.
+
+**A ring of a wrapped face was slid along `u` to stand at the seam.** A face
+that goes all the way round a closed surface is a strip between two rings,
+closed by a seam. The seam was a line of constant `u` through the first
+ring's first point, and the other ring was made to begin there too: slid
+along `u` by however far its own first point was from the cut, up to one
+sampling step. Every point of that ring was then drawn where it is and
+placed, in parameters, somewhere else — 0.6 mm along the boundary on the
+mannequin's forearm, 5.9 mm at the worst. The boundary was still the file's,
+so nothing that checks a boundary could see it. What it cost:
+
+* triangles beside the slid ring were folded by as much as the slide. The
+  mannequin meshed at 0.03 mm lay up to **5.1 mm** from the same mannequin
+  meshed at the default tolerance; it now lies within 0.9 mm, which is about
+  the default tolerance itself (0.78 mm);
+* no triangle at the slid ring could be brought within the sag of a surface
+  its corner was not on, so it was refined again and again toward that
+  corner. At a sag of 0.02 mm the points came within a tenth of a micron of
+  each other and four holes opened — twelve open edges and eight non-manifold
+  ones, with no warning, at a tolerance between two that were clean. The
+  mannequin has 2 to 9 % fewer triangles, by tolerance, for not doing this.
+
+The seam now runs from the first ring's first point to the other's, aslant
+when they do not stand at one `u`, and each ring keeps the parameters its own
+points invert to. Both copies of the seam are still evaluated on the left, so
+they agree to the bit.
+
+A trace had said this and was not believed: `[uv-dump]` prints each boundary
+point beside what the surface gives at its parameters, and for this face it
+said three quarters of them were half a millimetre off. The boundary
+residual, which inverts each point afresh, said they were on the surface to
+seven nanometres, and the trace was taken for the one that was wrong.
+
+| mannequin, by tolerance | faces not meshed from their surface, before → now | open / non-manifold edges, before → now |
+|---|---:|---:|
+| default | 0 → 0 | 0 / 0 → 0 / 0 |
+| `--sag 0.03 --angle 28.6` (issue #3) | 3 → **0** | 0 / 0 → 0 / 0 |
+| `--sag 0.1`, `0.05`, `0.03` | 0, 0, 2 → 0 | 0 / 0 → 0 / 0 |
+| `--sag 0.02` | 0 → 0 | 12 / 8 → **0 / 0** |
+| `--sag 0.01` | 2 → 1 | 0 / 0 → 0 / 0 |
+| `--sag 0.005` | 9 → 7 | 3 / 2 → 3 / 2 |
+| `--sag 0.2 --angle 40` | 10 → 2 | 25 / 3 → 3 / 1 |
+| `--sag 0.5` | 6 → 3 | 0 / 3 → 0 / 0 |
+
+The pilot at the default tolerance: 8 → 7 faces meshed from their
+boundaries, open and non-manifold edges 0 and 2 as before. The other ten
+Parasolid files and the STEP sample are unchanged in what they close; one
+small part has a quarter fewer triangles, within 0.1 mm of where they were.
+
+**What is left on the mannequin**, each counted by the conversion's warning:
+one face at 0.01 mm (285, three edges under two millimetres meeting at a
+corner the mesh leaves out) and seven at 0.005; and at tolerances of 0.2 mm and coarser, two to four faces (four at `--sag 1
+--angle 45`), one of which at `--sag 0.2 --angle 40` is not meshed at all and
+leaves three edges open. None of these was followed to its cause.

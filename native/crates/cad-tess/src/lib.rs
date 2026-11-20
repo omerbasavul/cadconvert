@@ -654,29 +654,142 @@ pub fn tessellate_solid(
 ) -> (Mesh, Report) {
     let edges = edge::discretise_all(solid, options);
 
+    // One face must not be able to lose the model. The triangulator reaches a
+    // third-party constrained-Delaunay library, and a boundary it cannot cope
+    // with aborts the thread — which, before this, took the whole conversion
+    // with it and printed nothing at all. A face that panics is a face that
+    // failed, no more, and it is reported as one.
+    let mesh_face = |fid: FaceId, edges: &[edge::Chain]| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            face::tessellate(solid, fid, edges, options)
+        }))
+        .unwrap_or_else(|_| Err("the triangulation aborted on this face's boundary".to_string()))
+    };
+
     // Per-face work is independent once the edge chains exist, which is where
     // the parallelism belongs: a face is a coherent unit of a few hundred
     // triangles, while a whole solid can be one face or ten thousand.
-    let faces: Vec<_> = solid
+    let mut faces: Vec<_> = solid
         .shell_faces()
         .collect::<Vec<_>>()
         .into_par_iter()
-        .map(|(shell_index, fid)| {
-            // One face must not be able to lose the model. The triangulator
-            // reaches a third-party constrained-Delaunay library, and a
-            // boundary it cannot cope with aborts the thread — which, before
-            // this, took the whole conversion with it and printed nothing at
-            // all. A face that panics is a face that failed, no more, and it
-            // is reported as one.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                face::tessellate(solid, fid, &edges, options)
-            }))
-            .unwrap_or_else(|_| {
-                Err("the triangulation aborted on this face's boundary".to_string())
-            });
-            (shell_index, fid, result)
-        })
+        .map(|(shell_index, fid)| (shell_index, fid, mesh_face(fid, &edges)))
         .collect();
+
+    // A curved face that could not be meshed from its surface is tried again
+    // with its boundary sampled as its surface asks — see
+    // `edge::follow_surfaces` — and so is every face along an edge that
+    // changed, since an edge is one chain for both of them.
+    //
+    // No face pays for another's second attempt. A face that meshed the first
+    // time and does not with the finer chains has its edges put back as they
+    // were, and whatever lies along those is meshed once more with what is
+    // left; that is repeated until nothing that was sound has been made
+    // unsound, which it must come to, because each round only puts edges back.
+    let in_trouble = |fid: FaceId, result: &Result<face::Patch, String>| match result {
+        Ok(patch) => {
+            patch.indices.is_empty()
+                || (patch.rebuilt
+                    && !matches!(
+                        solid.surface(solid.face(fid).surface),
+                        cad_ir::brep::Surface::Plane { .. }
+                    ))
+        }
+        Err(_) => true,
+    };
+    let troubled: Vec<FaceId> = faces
+        .iter()
+        .filter(|(_, fid, result)| in_trouble(*fid, result))
+        .map(|(_, fid, _)| *fid)
+        .collect();
+    if !troubled.is_empty() {
+        let mut finer = edges.clone();
+        let mut changed = edge::follow_surfaces(solid, &mut finer, &troubled, options);
+        let touches = |fid: FaceId, changed: &[bool]| {
+            solid
+                .face(fid)
+                .bounds
+                .iter()
+                .flat_map(|b| &b.halves)
+                .any(|h| changed[h.edge.index()])
+        };
+        // Each face's second result, where it has one that still stands.
+        let mut second: Vec<Option<Result<face::Patch, String>>> = (0..faces.len()).map(|_| None).collect();
+        let mut again: Vec<usize> = (0..faces.len()).filter(|&i| touches(faces[i].1, &changed)).collect();
+        let resampled = changed.iter().filter(|c| **c).count();
+        while !again.is_empty() {
+            let retried: Vec<_> = again
+                .par_iter()
+                .map(|&i| (i, mesh_face(faces[i].1, &finer)))
+                .collect();
+            for (i, result) in retried {
+                second[i] = Some(result);
+            }
+            // What was sound and is not: its edges go back.
+            let mut put_back = vec![false; solid.edges.len()];
+            for (i, (_, fid, first)) in faces.iter().enumerate() {
+                let Some(now) = &second[i] else { continue };
+                if !in_trouble(*fid, first) && in_trouble(*fid, now) {
+                    for half in solid.face(*fid).bounds.iter().flat_map(|b| &b.halves) {
+                        let e = half.edge.index();
+                        if changed[e] {
+                            put_back[e] = true;
+                        }
+                    }
+                }
+            }
+            if !put_back.iter().any(|p| *p) {
+                break;
+            }
+            for (e, back) in put_back.iter().enumerate() {
+                if *back {
+                    finer[e] = edges[e].clone();
+                    changed[e] = false;
+                }
+            }
+            // Every face along an edge that went back is out of date: meshed
+            // again if it still has a finer edge, and otherwise as it first was.
+            again.clear();
+            for (i, (_, fid, _)) in faces.iter().enumerate() {
+                let along = solid
+                    .face(*fid)
+                    .bounds
+                    .iter()
+                    .flat_map(|b| &b.halves)
+                    .any(|h| put_back[h.edge.index()]);
+                if !along {
+                    continue;
+                }
+                if touches(*fid, &changed) {
+                    again.push(i);
+                } else {
+                    second[i] = None;
+                }
+            }
+        }
+        let before = troubled.len();
+        let after = faces
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, fid, first))| in_trouble(*fid, second[*i].as_ref().unwrap_or(first)))
+            .count();
+        if std::env::var_os("CAD_TESS_AGAIN").is_some() {
+            eprintln!(
+                "[again] {}: faces in trouble {:?}; {resampled} edges resampled, {} kept, {} faces meshed again; in trouble {before} -> {after}",
+                solid.name,
+                troubled.iter().map(|f| f.0).collect::<Vec<_>>(),
+                changed.iter().filter(|c| **c).count(),
+                second.iter().filter(|r| r.is_some()).count(),
+            );
+        }
+        if after < before {
+            for (i, result) in second.into_iter().enumerate() {
+                if let Some(result) = result {
+                    faces[i].2 = result;
+                }
+            }
+        }
+    }
 
     let reference = solid.geometric_bounds();
 

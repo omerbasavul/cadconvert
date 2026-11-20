@@ -1953,27 +1953,29 @@ fn wrapped_region(
     // boundary shared with the neighbouring face — and a cut that is already
     // good is found at the first try, so nothing moves on a face that was
     // right.
-    let slide_to_cut = |rings: &mut Vec<UvLoop>| {
-        if let Some(cut) = rings.first().and_then(|r| r.uv.first()).map(|p| p.u) {
-            for r in rings.iter_mut().skip(1) {
-                let Some(start) = r.uv.first().map(|p| p.u) else { continue };
-                let slide = cut - start;
-                if slide != 0.0 {
-                    for q in &mut r.uv {
-                        q.u += slide;
-                    }
-                    r.area = signed_area(&r.uv);
-                }
-            }
-        }
-    };
+    // Each ring keeps the parameters its own points invert to, and the seam
+    // runs from the first ring's first point to the other's — aslant, when the
+    // two do not stand at one u. They used to be made to: the other ring was
+    // slid along u until its first point stood at the cut, by up to a
+    // sampling step, and every point of it was then drawn where it is while
+    // being placed, in parameters, somewhere else. On a mannequin's forearm
+    // that was 0.6 mm along the boundary and 5.9 mm at the worst. The
+    // boundary was still the file's and nothing in the mesh could see it,
+    // except that no triangle at the slid ring could be brought within the
+    // sag of a surface its corner was not on: refined again and again toward
+    // that corner, at a sag of 0.02 mm the points came to within a tenth of a
+    // micron of each other and four holes opened where they were rounded
+    // together.
+    //
+    // A ring's own segment stands at the cut where it is upright at that
+    // ring's own end of the seam.
     let stands_at_the_cut = |rings: &[UvLoop]| -> bool {
-        let Some(cut) = rings.first().and_then(|r| r.uv.first()).map(|p| p.u) else {
-            return false;
-        };
-        let hi = cut + period;
-        let at_seam = |u: f64| (u - cut).abs() < 1e-6 || (u - hi).abs() < 1e-6;
         rings.iter().any(|r| {
+            let Some(cut) = r.uv.first().map(|p| p.u) else {
+                return false;
+            };
+            let hi = cut + period;
+            let at_seam = |u: f64| (u - cut).abs() < 1e-6 || (u - hi).abs() < 1e-6;
             r.uv
                 .windows(2)
                 .any(|w| (w[1].u - w[0].u).abs() < 1e-9 && at_seam(w[0].u))
@@ -2033,7 +2035,6 @@ fn wrapped_region(
                 continue;
             }
             align_cuts(&mut trial, period);
-            slide_to_cut(&mut trial);
             if !stands_at_the_cut(&trial) {
                 let clear = !overruns(&trial);
                 if clear || taken.is_none() {
@@ -2064,7 +2065,6 @@ fn wrapped_region(
                     }
                 }
                 align_cuts(&mut rings, period);
-                slide_to_cut(&mut rings);
             }
         }
     }
@@ -2488,6 +2488,8 @@ fn close_strip(
 ) -> UvLoop {
     let u_lo = lower.uv[0].u;
     let u_hi = u_lo + period;
+    // The seam: from where the lower ring begins to where the upper one does.
+    let (seam_from, seam_to) = (lower.uv[0], upper.uv[0]);
     if std::env::var_os("CAD_TESS_SEAM").is_some() {
         let flat = |r: &UvLoop| {
             let n = r.uv.len();
@@ -2519,19 +2521,10 @@ fn close_strip(
     xyz.push(lower.xyz[0]);
 
     // Up the right-hand seam, evaluated on the left so the two columns agree.
-    seam_segment(
-        &mut uv,
-        &mut xyz,
-        surface,
-        u_hi,
-        u_lo,
-        lower_end.v,
-        upper.uv[0].v,
-        options,
-    );
+    seam_segment(&mut uv, &mut xyz, surface, period, seam_from, seam_to, true, options);
 
     // Back along the upper ring, right to left.
-    let upper_start = Vec2::new(u_hi, upper.uv[0].v);
+    let upper_start = Vec2::new(seam_to.u + period, seam_to.v);
     uv.push(upper_start);
     xyz.push(upper.xyz[0]);
     for (p, q) in upper.uv.iter().zip(&upper.xyz).rev() {
@@ -2543,16 +2536,7 @@ fn close_strip(
     }
 
     // Down the left-hand seam, the same points in the opposite order.
-    seam_segment(
-        &mut uv,
-        &mut xyz,
-        surface,
-        u_lo,
-        u_lo,
-        upper.uv[0].v,
-        lower.uv[0].v,
-        options,
-    );
+    seam_segment(&mut uv, &mut xyz, surface, 0.0, seam_from, seam_to, false, options);
 
     // The rings arrive carrying their own closing point — the repeat of the
     // first, a period on — and the seam columns add their ends on top of it,
@@ -2668,21 +2652,45 @@ fn crosses_at(uv: &[Vec2], k: usize) -> bool {
 
 /// Interior points along a seam line, so the strip's ends are not one long edge.
 ///
-/// `u` places the points in parameter space; `u_eval` is where they are
-/// evaluated. The two differ by exactly one period on the right-hand seam, and
-/// keeping the evaluation canonical is what makes the two columns of the strip
-/// bit-identical in 3D — without it the seam is a hairline crack.
+/// The seam runs from `from`, on the lower ring, to `to`, on the upper, and is
+/// walked `upward` or back. `shift` is how far along u this copy of it is
+/// placed: nothing on the left, a period on the right. Both copies are
+/// evaluated where the left one stands, and that is what makes the two sides
+/// of the strip bit-identical in 3D — without it the seam is a hairline crack.
+///
+/// Where the two rings begin at one u the seam is a line of constant u, as it
+/// always was. Where they do not it leans, by as much as the rings' own first
+/// points are apart, and its u is read off the straight line between them.
+#[allow(clippy::too_many_arguments)]
 fn seam_segment(
     uv: &mut Vec<Vec2>,
     xyz: &mut Vec<Vec3>,
     surface: &Surface,
-    u: f64,
-    u_eval: f64,
-    v_from: f64,
-    v_to: f64,
+    shift: f64,
+    from: Vec2,
+    to: Vec2,
+    upward: bool,
     options: &Resolved,
 ) {
-    let steps = v_steps(surface, u_eval, v_from, v_to, options);
+    let (v_from, v_to) = if upward { (from.v, to.v) } else { (to.v, from.v) };
+    let lean = to.u - from.u;
+    let rise = to.v - from.v;
+    if rise == 0.0 {
+        // The two rings begin at one height: the seam is the step between
+        // them, and has nothing along it to be read off by height.
+        return;
+    }
+    // Always from the lower ring's end, whichever way the walk goes, so the
+    // two walks name the same u for the same v to the bit.
+    let u_at = |v: f64| if lean == 0.0 { from.u } else { from.u + lean * ((v - from.v) / rise) };
+    let along = |v: f64| surface.point_at(Vec2::new(u_at(v), v));
+    let steps = if lean == 0.0 {
+        v_steps(surface, from.u, v_from, v_to, options)
+    } else {
+        // Aslant, a seam is straight on no surface: on a cylinder it is a
+        // turn of a helix.
+        adaptive_steps(&|t: f64| along(v_from + (v_to - v_from) * t), options)
+    };
     // A strip is closed by walking its seam up one side and back down the
     // other, and the two walks have to land on the same points to the bit or
     // the mesh does not close along the seam. Interpolating from whichever end
@@ -2700,7 +2708,6 @@ fn seam_segment(
     // grid had — and the triangulation bridged the gaps with a fan from the
     // seam's corner reaching a twentieth of the way along the spring. Looked
     // at down the axis, that fan is a cone spanning the inside of the coil.
-    let along = |t: f64| surface.point_at(Vec2::new(u_eval, t));
     let breaks = crate::knots::thin_breaks(
         &crate::knots::surface_breaks(surface, crate::knots::Axis::V, lo, hi),
         lo,
@@ -2719,8 +2726,8 @@ fn seam_segment(
         } else {
             ladder[inner - i]
         };
-        uv.push(Vec2::new(u, v));
-        xyz.push(surface.point_at(Vec2::new(u_eval, v)));
+        uv.push(Vec2::new(u_at(v) + shift, v));
+        xyz.push(along(v));
     }
 }
 
@@ -4676,6 +4683,45 @@ mod tests {
             travel: 0,
             area,
         }
+    }
+
+    #[test]
+    fn a_seam_between_rings_that_begin_apart_leans_and_still_closes() {
+        // Two rings of a cylinder whose first points are 0.3 of a radian
+        // apart. The seam between them is walked up the right-hand side and
+        // back down the left; the two walks must name the same places in
+        // space to the bit, a period apart in u, or the strip does not close.
+        use cad_ir::math::Frame;
+        let surface = Surface::Cylinder { frame: Frame::IDENTITY, radius: 10.0 };
+        let options = crate::Options::default().resolve(40.0);
+        let period = std::f64::consts::TAU;
+        let (from, to) = (Vec2::new(0.5, 0.0), Vec2::new(0.8, 12.0));
+
+        let (mut up_uv, mut up_xyz) = (Vec::new(), Vec::new());
+        seam_segment(&mut up_uv, &mut up_xyz, &surface, period, from, to, true, &options);
+        let (mut down_uv, mut down_xyz) = (Vec::new(), Vec::new());
+        seam_segment(&mut down_uv, &mut down_xyz, &surface, 0.0, from, to, false, &options);
+
+        // Aslant on a cylinder the seam is a piece of a helix, not a line.
+        assert!(up_xyz.len() >= 2, "a helix drawn with {} points", up_xyz.len());
+        assert_eq!(up_xyz.len(), down_xyz.len());
+        for (i, x) in up_xyz.iter().enumerate() {
+            let j = down_xyz.len() - 1 - i;
+            let y = down_xyz[j];
+            assert_eq!((x.x.to_bits(), x.y.to_bits(), x.z.to_bits()), (y.x.to_bits(), y.y.to_bits(), y.z.to_bits()));
+            assert!((up_uv[i].u - period - down_uv[j].u).abs() < 1e-12);
+            assert_eq!(up_uv[i].v.to_bits(), down_uv[j].v.to_bits());
+            // And it is on the line between the two rings' first points.
+            let on_line = from.u + (to.u - from.u) * (down_uv[j].v - from.v) / (to.v - from.v);
+            assert!((down_uv[j].u - on_line).abs() < 1e-12);
+        }
+
+        // Rings that begin at one u are joined as they always were: straight
+        // up, which on a cylinder is a line and needs nothing between its ends
+        // but what the least count of segments asks for.
+        let (mut uv, mut xyz) = (Vec::new(), Vec::new());
+        seam_segment(&mut uv, &mut xyz, &surface, 0.0, from, Vec2::new(from.u, 12.0), true, &options);
+        assert!(uv.iter().all(|p| p.u.to_bits() == from.u.to_bits()));
     }
 
     #[test]
