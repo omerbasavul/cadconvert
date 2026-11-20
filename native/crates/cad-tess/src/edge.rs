@@ -6,8 +6,9 @@
 //! two faces to disagree about where their shared edge is.
 
 use crate::options::Resolved;
-use cad_ir::brep::{Curve, Edge, EdgeId, Solid};
-use cad_ir::math::{Interval, Vec3};
+use cad_ir::brep::{Curve, Edge, EdgeId, FaceId, Solid, Surface};
+use cad_ir::eval::surface::Domain;
+use cad_ir::math::{Interval, Vec2, Vec3};
 use rayon::prelude::*;
 
 /// One edge sampled into a polyline, running from its start vertex to its end.
@@ -108,6 +109,356 @@ pub fn discretise_all(solid: &Solid, options: &Resolved) -> Vec<Chain> {
         }
     }
     chains
+}
+
+/// A surface a chord is held to, with the periods its parameters turn by.
+struct Held<'a> {
+    surface: &'a Surface,
+    domain: Domain,
+}
+
+/// Sample the edges of some faces more finely, where the faces' own surfaces
+/// ask for it. Says which chains changed.
+///
+/// A chain is sampled to a tolerance in space, and a face is meshed in its
+/// surface's parameters, where the chain's points are joined by straight
+/// lines. Mostly the two agree: what is straight for a millimetre in space is
+/// very nearly straight in parameters. Beside a pole it is not. A boundary
+/// that passes a millimetre from the pole of a spun ellipse turns through
+/// most of a radian of `u` in the length of one chord, and the straight line
+/// between its two ends in parameters is a different curve on the surface: a
+/// tenth of a millimetre from the boundary where the chain was held to three
+/// hundredths. On a face narrower than that the two sides crossed, no region
+/// had that outline, and the face was meshed from its boundary: three slivers
+/// at the fingertips of a mannequin, at some tolerances and not at others, by
+/// where the samples happened to fall.
+///
+/// So a chord of such a face is also held to this: the point of the surface
+/// half way along it *in parameters* lies on the curve, to a quarter of the
+/// sag or a thirtieth of the chord's own length, whichever is less. The
+/// second is what keeps a sliver a sliver however fine it is, since the error
+/// shrinks with the square of the chord and the sliver's width only with the
+/// chord. Where it does not hold the chord is halved at the curve's own
+/// parameter.
+///
+/// It is asked only of faces that have already failed to mesh from their
+/// surface, because held to everywhere it is a second sampling rule laid over
+/// the first: every boundary of a sphere above its tropics would be halved,
+/// to mend faces that had nothing wrong with them. And it is done on the
+/// edge, not in the face: both faces along an edge are handed the same
+/// points, so neither can split what the other did not.
+pub(crate) fn follow_surfaces(
+    solid: &Solid,
+    chains: &mut [Chain],
+    faces: &[FaceId],
+    options: &Resolved,
+) -> Vec<bool> {
+    let mut held: Vec<Vec<usize>> = vec![Vec::new(); solid.edges.len()];
+    for fid in faces {
+        let face = solid.face(*fid);
+        let at = face.surface.index();
+        if matches!(solid.surfaces[at], Surface::Plane { .. }) {
+            continue;
+        }
+        for half in face.bounds.iter().flat_map(|b| &b.halves) {
+            let list = &mut held[half.edge.index()];
+            if !list.contains(&at) {
+                list.push(at);
+            }
+        }
+    }
+    let mut changed: Vec<bool> = chains
+        .par_iter_mut()
+        .enumerate()
+        .map(|(ei, chain)| {
+            if held[ei].is_empty() || chain.len() < 2 {
+                return false;
+            }
+            let edge = &solid.edges[ei];
+            let curve = &solid.curves[edge.curve.index()];
+            let local = options.for_extent(edge_extent(solid, edge));
+            // Nothing is put closer to its neighbour than the merge in
+            // `discretise` would have taken away again.
+            let floor = 2.0 * (edge.tolerance.max(0.0) * MERGE_TOLERANCES).min(local.sag * MERGE_SAG);
+            let surfaces: Vec<Held> = held[ei]
+                .iter()
+                .map(|&k| Held {
+                    surface: &solid.surfaces[k],
+                    domain: solid.surfaces[k].domain(),
+                })
+                .collect();
+            let mut points = Vec::with_capacity(chain.points.len());
+            let mut params = Vec::with_capacity(chain.params.len());
+            for i in 0..chain.points.len() - 1 {
+                points.push(chain.points[i]);
+                params.push(chain.params[i]);
+                let span = Span {
+                    a: chain.points[i],
+                    b: chain.points[i + 1],
+                    ta: chain.params[i],
+                    tb: chain.params[i + 1],
+                };
+                // The chain's parameters are the curve's only where the chain
+                // was sampled from it; one replaced by its chord has nothing
+                // to halve.
+                let near = edge.tolerance.max(local.sag);
+                if (curve.point_at(span.ta) - span.a).length() > near
+                    || (curve.point_at(span.tb) - span.b).length() > near
+                {
+                    continue;
+                }
+                halve_where_astray(curve, &surfaces, span, local.sag, floor, 0, &mut points, &mut params);
+            }
+            points.push(chain.points[chain.points.len() - 1]);
+            params.push(chain.params[chain.params.len() - 1]);
+            let changed = points.len() > chain.points.len();
+            if changed {
+                chain.points = points;
+                chain.params = params;
+            }
+            changed
+        })
+        .collect();
+
+    // What is left is a boundary that crosses itself although every chord of
+    // it is where its surface says: two edges leaving a corner side by side,
+    // as the two sides of a blend do where it runs out, each within the sag of
+    // its own curve and the two curves closer together than that. Sampled at
+    // different places their chords cross, and no finer tolerance is owed to
+    // either — only that the two chords which cross be halved, and that again
+    // until they do not. An edge of two points in such a face is halved first,
+    // whatever it crosses: a face between two edges that are each one chord is
+    // that chord twice.
+    const ROUNDS: usize = 6;
+    for round in 0..ROUNDS {
+        let mut marks: rustc_hash::FxHashSet<(usize, usize)> = Default::default();
+        for fid in faces {
+            let face = solid.face(*fid);
+            let surface = solid.surface(face.surface);
+            if matches!(surface, Surface::Plane { .. }) {
+                continue;
+            }
+            if round == 0 {
+                for half in face.bounds.iter().flat_map(|b| &b.halves) {
+                    if chains[half.edge.index()].len() == 2 {
+                        marks.insert((half.edge.index(), 0));
+                    }
+                }
+            }
+            crossing_chords(solid, chains, *fid, &mut marks);
+        }
+        if marks.is_empty() {
+            break;
+        }
+        let mut any = false;
+        for (ei, chain) in chains.iter_mut().enumerate() {
+            let mut at: Vec<usize> = marks.iter().filter(|m| m.0 == ei).map(|m| m.1).collect();
+            if at.is_empty() {
+                continue;
+            }
+            at.sort_unstable();
+            let edge = &solid.edges[ei];
+            let curve = &solid.curves[edge.curve.index()];
+            let local = options.for_extent(edge_extent(solid, edge));
+            let floor = 2.0 * (edge.tolerance.max(0.0) * MERGE_TOLERANCES).min(local.sag * MERGE_SAG);
+            let near = edge.tolerance.max(local.sag);
+            let mut points = Vec::with_capacity(chain.points.len() + at.len());
+            let mut params = Vec::with_capacity(chain.params.len() + at.len());
+            for i in 0..chain.points.len() {
+                points.push(chain.points[i]);
+                params.push(chain.params[i]);
+                if i + 1 == chain.points.len() || at.binary_search(&i).is_err() {
+                    continue;
+                }
+                let (a, b) = (chain.points[i], chain.points[i + 1]);
+                let (ta, tb) = (chain.params[i], chain.params[i + 1]);
+                let tm = 0.5 * (ta + tb);
+                let m = curve.point_at(tm);
+                if !m.is_finite()
+                    || (b - a).length() <= floor
+                    || (curve.point_at(ta) - a).length() > near
+                    || (curve.point_at(tb) - b).length() > near
+                {
+                    continue;
+                }
+                points.push(m);
+                params.push(tm);
+            }
+            if points.len() > chain.points.len() {
+                chain.points = points;
+                chain.params = params;
+                changed[ei] = true;
+                any = true;
+            }
+        }
+        if !any {
+            break;
+        }
+    }
+    changed
+}
+
+/// The chords of a face's boundary that cross another of its chords in the
+/// surface's parameters, each named by its edge and its place in the chain.
+fn crossing_chords(
+    solid: &Solid,
+    chains: &[Chain],
+    fid: FaceId,
+    marks: &mut rustc_hash::FxHashSet<(usize, usize)>,
+) {
+    let face = solid.face(fid);
+    let surface = solid.surface(face.surface);
+    let domain = surface.domain();
+    // Every chord of every bound: where it runs in parameters, and whose it is.
+    let mut chords: Vec<(Vec2, Vec2, usize, usize, usize)> = Vec::new();
+    for (ring, bound) in face.bounds.iter().enumerate() {
+        let mut previous: Option<Vec2> = None;
+        for half in &bound.halves {
+            let chain = &chains[half.edge.index()];
+            let n = chain.points.len();
+            if n < 2 {
+                return;
+            }
+            for k in 0..n {
+                let i = if half.forward { k } else { n - 1 - k };
+                let Some(mut uv) = surface.invert(chain.points[i], previous) else {
+                    return;
+                };
+                if let Some(before) = previous {
+                    if let Some(period) = domain.u_period {
+                        uv.u -= ((uv.u - before.u) / period).round() * period;
+                    }
+                    if let Some(period) = domain.v_period {
+                        uv.v -= ((uv.v - before.v) / period).round() * period;
+                    }
+                    if k > 0 {
+                        // The chord from the point before, by its lower index
+                        // in the chain as the chain is kept.
+                        let lower = if half.forward { i - 1 } else { i };
+                        chords.push((before, uv, half.edge.index(), lower, ring));
+                    }
+                }
+                previous = Some(uv);
+            }
+        }
+    }
+    if chords.len() > 4096 {
+        return;
+    }
+    let side = |a: Vec2, b: Vec2, c: Vec2| (b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u);
+    for x in 0..chords.len() {
+        for y in x + 1..chords.len() {
+            let (a, b, ..) = chords[x];
+            let (c, d, ..) = chords[y];
+            // Chords that share an end meet there and nowhere else.
+            let same = |p: Vec2, q: Vec2| p.u == q.u && p.v == q.v;
+            if same(a, c) || same(a, d) || same(b, c) || same(b, d) {
+                continue;
+            }
+            let (d1, d2) = (side(a, b, c), side(a, b, d));
+            let (d3, d4) = (side(c, d, a), side(c, d, b));
+            if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                marks.insert((chords[x].2, chords[x].3));
+                marks.insert((chords[y].2, chords[y].3));
+            }
+        }
+    }
+}
+
+/// One chord of a chain: its two ends and their parameters on the curve.
+#[derive(Clone, Copy)]
+struct Span {
+    a: Vec3,
+    b: Vec3,
+    ta: f64,
+    tb: f64,
+}
+
+/// Push the points a chord needs between its ends, in order.
+#[allow(clippy::too_many_arguments)]
+fn halve_where_astray(
+    curve: &Curve,
+    surfaces: &[Held],
+    span: Span,
+    sag: f64,
+    floor: f64,
+    depth: u32,
+    points: &mut Vec<Vec3>,
+    params: &mut Vec<f64>,
+) {
+    const DEEPEST: u32 = 8;
+    let length = (span.b - span.a).length();
+    if depth >= DEEPEST || length <= floor || !length.is_finite() {
+        return;
+    }
+    let within = (sag * 0.25).min(length / 30.0);
+    if !surfaces.iter().any(|s| astray(curve, s, span) > within) {
+        return;
+    }
+    let tm = 0.5 * (span.ta + span.tb);
+    let m = curve.point_at(tm);
+    if !m.is_finite() {
+        return;
+    }
+    halve_where_astray(curve, surfaces, Span { b: m, tb: tm, ..span }, sag, floor, depth + 1, points, params);
+    points.push(m);
+    params.push(tm);
+    halve_where_astray(curve, surfaces, Span { a: m, ta: tm, ..span }, sag, floor, depth + 1, points, params);
+}
+
+/// How far from the curve the surface is, half way along a chord in its own
+/// parameters.
+fn astray(curve: &Curve, held: &Held, span: Span) -> f64 {
+    let Held { surface, domain } = held;
+    let Some(mut ua) = surface.invert(span.a, None) else {
+        return 0.0;
+    };
+    let Some(mut ub) = surface.invert(span.b, Some(ua)) else {
+        return 0.0;
+    };
+    // An end standing on the pole has no `u` of its own, and takes the other's:
+    // the chord from a pole is a meridian. Whether it stands there is asked of
+    // the surface and not of the pole's coordinates: a vertex that is the pole
+    // is solved to within rounding of it, not onto it, and an end whose `u`
+    // can be exchanged for the other's without moving it a thousandth of the
+    // chord has none to speak of.
+    let size = (span.b - span.a).length();
+    let moved = |at: Vec2, u: f64| (surface.point_at(Vec2::new(u, at.v)) - surface.point_at(at)).length();
+    if moved(ua, ub.u) <= size * 1e-3 {
+        ua.u = ub.u;
+    } else if moved(ub, ua.u) <= size * 1e-3 {
+        ub.u = ua.u;
+    }
+    // The nearer way round, where there are two.
+    if let Some(period) = domain.u_period {
+        ub.u -= ((ub.u - ua.u) / period).round() * period;
+    }
+    if let Some(period) = domain.v_period {
+        ub.v -= ((ub.v - ua.v) / period).round() * period;
+    }
+    let half_way = surface.point_at(Vec2::new(0.5 * (ua.u + ub.u), 0.5 * (ua.v + ub.v)));
+    if !half_way.is_finite() {
+        return 0.0;
+    }
+    // The curve between the two ends, as eight chords of its own: fine enough
+    // that what is measured is the distance to the curve and not to them.
+    const PIECES: usize = 8;
+    let at = |k: usize| match k {
+        0 => span.a,
+        PIECES => span.b,
+        _ => curve.point_at(span.ta + (span.tb - span.ta) * k as f64 / PIECES as f64),
+    };
+    let mut nearest = f64::INFINITY;
+    let mut from = at(0);
+    for k in 1..=PIECES {
+        let to = at(k);
+        let along = to - from;
+        let l2 = along.length_squared();
+        let t = if l2 > 0.0 { ((half_way - from).dot(along) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        nearest = nearest.min((half_way - (from + along * t)).length());
+        from = to;
+    }
+    nearest
 }
 
 /// How far apart two chain points may be and still count as one.
@@ -943,5 +1294,87 @@ mod tests {
         let chain = &discretise_all(&s, &loose)[0];
         // A full turn at 15 degrees is 24 segments.
         assert!(chain.len() >= 24, "only {} points", chain.len());
+    }
+
+    /// The chords `halve_where_astray` leaves between the two ends of one.
+    fn halved(curve: &Curve, held: &Held, ta: f64, tb: f64, sag: f64) -> Vec<Span> {
+        let span = Span { a: curve.point_at(ta), b: curve.point_at(tb), ta, tb };
+        let (mut points, mut params) = (vec![span.a], vec![ta]);
+        halve_where_astray(curve, std::slice::from_ref(held), span, sag, 0.0, 0, &mut points, &mut params);
+        points.push(span.b);
+        params.push(tb);
+        points
+            .windows(2)
+            .zip(params.windows(2))
+            .map(|(p, t)| Span { a: p[0], b: p[1], ta: t[0], tb: t[1] })
+            .collect()
+    }
+
+    #[test]
+    fn a_chord_beside_a_pole_is_halved_until_it_follows_its_curve() {
+        // A sphere of ten, cut by the plane one unit off its axis: a circle
+        // that passes one unit from the pole. Two units of it there are
+        // nearly straight in space and a quarter turn of longitude — the
+        // straight line between their ends in parameters runs a tenth of a
+        // unit inside the circle.
+        let sphere = Surface::Sphere { frame: Frame::IDENTITY, radius: 10.0 };
+        let held = Held { domain: sphere.domain(), surface: &sphere };
+        let beside = Curve::Circle {
+            frame: Frame {
+                origin: Vec3::new(1.0, 0.0, 0.0),
+                axis: Vec3::new(1.0, 0.0, 0.0),
+                ref_dir: Vec3::new(0.0, 0.0, 1.0),
+            },
+            radius: 99.0f64.sqrt(),
+        };
+        let sag = 0.1;
+        let whole = Span {
+            a: beside.point_at(-0.1),
+            b: beside.point_at(0.1),
+            ta: -0.1,
+            tb: 0.1,
+        };
+        assert!(astray(&beside, &held, whole) > 0.05, "{}", astray(&beside, &held, whole));
+        let chords = halved(&beside, &held, -0.1, 0.1, sag);
+        assert!(chords.len() > 2, "left as {} chords", chords.len());
+        for c in &chords {
+            let within = (sag * 0.25).min((c.b - c.a).length() / 30.0);
+            assert!(astray(&beside, &held, *c) <= within, "a chord of {} is {} astray", (c.b - c.a).length(), astray(&beside, &held, *c));
+        }
+
+        // A circle of latitude is a straight line in parameters already, and a
+        // chord of it is left alone however near the pole it runs.
+        let latitude = Curve::Circle {
+            frame: Frame { origin: Vec3::new(0.0, 0.0, 9.95), ..Frame::IDENTITY },
+            radius: (100.0f64 - 9.95 * 9.95).sqrt(),
+        };
+        assert_eq!(halved(&latitude, &held, 0.0, 0.5, sag).len(), 1);
+    }
+
+    #[test]
+    fn a_chord_that_ends_on_the_pole_is_a_meridian() {
+        // A meridian sampled down to the pole, whose last vertex is the pole
+        // to within rounding and not to the bit: its longitude is whatever
+        // the arithmetic made of a radius of nothing, and must not be read as
+        // a quarter turn to be followed.
+        let sphere = Surface::Sphere { frame: Frame::IDENTITY, radius: 10.0 };
+        let held = Held { domain: sphere.domain(), surface: &sphere };
+        let meridian = Curve::Circle {
+            frame: Frame {
+                origin: Vec3::ZERO,
+                axis: Vec3::new(0.0, -1.0, 0.0),
+                ref_dir: Vec3::new(1.0, 0.0, 0.0),
+            },
+            radius: 10.0,
+        };
+        let pole = TAU / 4.0;
+        let nearly = Span {
+            a: meridian.point_at(pole - 0.01),
+            b: meridian.point_at(pole) + Vec3::new(0.0, 1e-13, 0.0),
+            ta: pole - 0.01,
+            tb: pole,
+        };
+        assert!((nearly.b - Vec3::new(0.0, 0.0, 10.0)).length() < 1e-9, "{:?}", nearly.b);
+        assert!(astray(&meridian, &held, nearly) < 1e-6, "{}", astray(&meridian, &held, nearly));
     }
 }

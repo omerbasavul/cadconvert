@@ -183,6 +183,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         println!("[patch] triangle {} {} {}", t[0], t[1], t[2]);
                                     }
                                 }
+                                // UV_AT=x,y,z;x,y,z: where on the face's surface each of
+                                // these points is.
+                                if let Ok(list) = std::env::var("UV_AT") {
+                                    let surface = solid.surface(solid.face(*fid).surface);
+                                    for one in list.split(';') {
+                                        let n: Vec<f64> = one.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                                        if n.len() == 3 {
+                                            let x = cad_ir::math::Vec3::new(n[0], n[1], n[2]);
+                                            match surface.nearest(x, None) {
+                                                Some(uv) => println!("[uv-at] face {} [{}] -> u {:.9} v {:.9}, {:.6} away", fid.0, one, uv.u, uv.v, (surface.point_at(uv) - x).length()),
+                                                None => println!("[uv-at] face {} [{}] -> nothing", fid.0, one),
+                                            }
+                                        }
+                                    }
+                                }
                                 // OFF_SURFACE: how far the patch's own vertices sit from
                                 // the surface the face lies on — what a face meshed from
                                 // its boundary costs in shape.
